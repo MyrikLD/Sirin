@@ -33,7 +33,7 @@ def _guard[**P](probe: Callable[P, Awaitable[ProbeResult]]) -> Callable[P, Await
             return await asyncio.wait_for(probe(*args, **kwargs), PROBE_TIMEOUT_S)
         except TimeoutError:
             return ProbeResult(ok=False, message=f"No answer within {PROBE_TIMEOUT_S:.0f} s")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return ProbeResult(ok=False, message=f"{type(exc).__name__}: {exc}")
 
     return guarded
@@ -93,7 +93,7 @@ async def probe_llm(cfg: LLMConfig) -> ProbeResult:
 async def probe_mcp(cfg: McpServerConfig, oauth: OAuthManager) -> ProbeResult:
     try:
         tools = await list_server_tools(cfg, oauth)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return ProbeResult(ok=False, message=await explain_connect_error(cfg, exc))
     details = [f"{cfg.name}_{t.name}: {(t.description or '').partition('\n')[0]}" for t in tools]
     return ProbeResult(ok=True, message=f"{len(tools)} tool(s)", details=details)

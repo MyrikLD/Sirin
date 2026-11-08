@@ -87,7 +87,7 @@ class Agent:
             toolset = await build_toolset(server, self._oauth, on_lost=lost).__aenter__()
             self._connected.append(toolset)
             count = len(await toolset.list_tools())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             reason = await explain_connect_error(server, exc)
             _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, reason)
             self._set_status(server.name, ItemStatus(state="error", detail=reason))

@@ -175,7 +175,7 @@ class OAuthManager:
         async def login() -> None:
             try:
                 await asyncio.wait_for(connect(provider), AUTHORIZE_TIMEOUT_S)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if not flow.url.done():
                     flow.url.set_exception(exc)
                 else:

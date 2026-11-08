@@ -29,6 +29,12 @@ packages = ["src/voice_orchestrator"]
 [tool.ruff]
 line-length = 120
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "BLE"]
+# Catch-alls are deliberate at the edges: a probe, a pipeline run or an MCP connection must report any failure
+# to the page or the device instead of crashing the service.
+ignore = ["BLE001"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",

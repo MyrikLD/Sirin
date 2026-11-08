@@ -67,7 +67,7 @@ class PipelineRun:
         except PipelineError as exc:
             _log.warning("[%s] %s: %s", self._log_name, exc.code, exc)
             self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": exc.code, "message": str(exc)})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _log.exception("[%s] pipeline failed", self._log_name)
             self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": "pipeline-error", "message": str(exc)[:200]})
         finally:

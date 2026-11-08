@@ -53,7 +53,7 @@ class IsolatedToolset(WrapperToolset[None]):
             async with self._mcp:
                 connected.set_result(None)
                 await self._stop.wait()
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             if not connected.done():
                 connected.set_exception(exc if isinstance(exc, Exception) else RuntimeError("MCP connection cancelled"))
             elif self._on_lost is not None and isinstance(exc, Exception):
