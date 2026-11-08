@@ -1,0 +1,31 @@
+[project]
+name = "voice-orchestrator"
+version = "0.1.0"
+description = "Voice pipeline for ESPHome satellites with an LLM agent and MCP tools"
+requires-python = ">=3.12"
+dependencies = [
+    "aioesphomeapi>=46",
+    "fastapi>=0.115",
+    "fastmcp-slim[client]>=4",
+    "httpx2>=2.10",
+    "jinja2>=3.1",
+    "pydantic-ai-slim[openai,mcp]>=2.66",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.6",
+    "pymicro-vad>=2.1",
+    "uvicorn>=0.30",
+    "wyoming>=1.6",
+]
+
+[project.scripts]
+voice-orchestrator = "voice_orchestrator.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_orchestrator"]
+
+[tool.ruff]
+line-length = 120

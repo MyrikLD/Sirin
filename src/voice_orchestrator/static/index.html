@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Orchestrator</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1c1e21; --muted: #6b7280; --border: #dfe3e8;
+    --accent: #2563eb; --accent-text: #fff; --ok: #15803d; --warn: #b45309; --err: #b91c1c;
+    --input: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111316; --card: #1a1d21; --text: #e6e8eb; --muted: #9aa1ab; --border: #2c3138;
+      --accent: #5b8def; --accent-text: #0b0d10; --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
+      --input: #14171a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 96px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  section.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  section.card > h2 { font-size: 15px; margin: 0 0 2px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  .field { display: grid; grid-template-columns: 180px 1fr; gap: 4px 12px; align-items: start; margin: 8px 0; }
+  .field > label { font-family: ui-monospace, monospace; font-size: 13px; padding-top: 6px; overflow-wrap: anywhere; }
+  .field > .hint { grid-column: 2; margin: 0; }
+  @media (max-width: 600px) { .field { grid-template-columns: 1fr; } .field > .hint { grid-column: 1; } }
+  input, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--input); color: var(--text); font: inherit; }
+  input[type=checkbox] { width: auto; justify-self: start; margin: 8px 0 0; }
+  select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--input); color: var(--text); font: inherit; }
+  textarea { min-height: 72px; resize: vertical; }
+  textarea.long { min-height: 216px; }
+  .item { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; }
+  .item > summary { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; list-style: none; }
+  .item > summary::-webkit-details-marker { display: none; }
+  .item > summary::before { content: "▸"; color: var(--muted); }
+  .item[open] > summary::before { content: "▾"; }
+  .item > summary .name { flex: 1; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+  .item > summary .badge { font-weight: 600; }
+  .item > .body { padding: 0 12px 8px; border-top: 1px dashed var(--border); }
+  .row { display: flex; gap: 8px; margin: 4px 0; }
+  .row input { flex: 1; }
+  button { font: inherit; border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: progress; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); padding: 8px 18px; }
+  button.remove { padding: 2px 8px; }
+  .probe { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .probe .result { flex: 1; min-width: 200px; overflow-wrap: anywhere; }
+  .probe details { flex-basis: 100%; font-size: 12px; color: var(--muted); }
+  .probe details pre { margin: 6px 0 0; white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--border); padding: 10px 16px; }
+  .bar > div { max-width: 860px; margin: 0 auto; display: flex; gap: 12px; align-items: center; }
+  #msg { white-space: pre-wrap; font-size: 13px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voice Orchestrator</h1>
+  <form id="form"></form>
+</main>
+<div class="bar"><div><button class="primary" id="save">Save and apply</button><span id="msg"></span></div></div>
+<script>
+const TITLES = {
+  devices: "Devices", stt: "Speech-to-text", tts: "Text-to-speech",
+  vad: "End of utterance (VAD)", llm: "Language model", mcp_servers: "MCP servers",
+};
+// Settings models that have a connection test, keyed by their JSON schema definition name.
+const PROBES = { SttConfig: "stt", TtsConfig: "tts", LLMConfig: "llm", McpServerConfig: "mcp", DeviceConfig: "device" };
+const SECRET = /(psk|key|token|password)/i;
+let schema, defs;
+
+const el = (tag, attrs = {}, ...children) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v; else if (k.startsWith("on")) node.addEventListener(k.slice(2), v); else node.setAttribute(k, v);
+  }
+  node.append(...children.filter(c => c != null));
+  return node;
+};
+
+function resolve(s) {
+  if (s.$ref) {
+    const name = s.$ref.split("/").pop();
+    return { ...defs[name], ...s, $ref: undefined, def: name };
+  }
+  if (s.anyOf) {
+    const branch = s.anyOf.find(b => b.type !== "null");
+    return { ...s, anyOf: undefined, ...resolve(branch), nullable: s.anyOf.some(b => b.type === "null"), description: s.description, default: s.default };
+  }
+  return s;
+}
+
+// Each editor returns {node, get}; get() returns undefined to let the server apply the default.
+function editor(rawSchema, value, key) {
+  const s = resolve(rawSchema);
+  if (s["x-choices"]) return choiceEditor(s, value);
+  if (s.type === "object" && s.properties) return objectEditor(s, value || {});
+  if (s.type === "object") return mapEditor(s, value);
+  if (s.type === "array" && resolve(s.items).type === "object") return listEditor(s, value || [], key);
+  if (s.type === "array") return linesEditor(s, value || []);
+  if (s.type === "boolean") {
+    const input = el("input", { type: "checkbox" }); input.checked = value ?? s.default ?? false;
+    return { node: input, get: () => input.checked };
+  }
+  const numeric = s.type === "integer" || s.type === "number";
+  const long = typeof (value ?? s.default) === "string" && (value ?? s.default).length > 80;
+  const input = long ? el("textarea", { class: "long" }) : el("input", {
+    type: numeric ? "number" : SECRET.test(key || "") ? "password" : "text",
+    ...(s.type === "number" ? { step: "any" } : {}),
+  });
+  input.value = value ?? "";
+  if (s.default != null && value == null) input.placeholder = String(s.default);
+  return {
+    node: input,
+    get: () => {
+      const v = input.value.trim();
+      if (v === "") return s.nullable ? null : undefined;
+      return numeric ? Number(v) : v;
+    },
+  };
+}
+
+// A dropdown of values the server reports; the saved value stays listed even if the server dropped it.
+function choiceEditor(s, value) {
+  const select = el("select");
+  const setOptions = (values) => {
+    const current = select.value || value || "";
+    const options = [el("option", { value: "" }, s.default ? `default (${s.default})` : "server default")];
+    for (const v of values) options.push(el("option", { value: v }, v));
+    if (current && !values.includes(current)) options.push(el("option", { value: current }, `${current} (not on the server)`));
+    select.replaceChildren(...options);
+    select.value = current;
+  };
+  setOptions([]);
+  return { node: select, get: () => select.value || (s.nullable ? null : undefined), setOptions };
+}
+
+function objectEditor(s, value) {
+  const node = el("div"), getters = {}, choices = {};
+  const required = new Set(s.required || []);
+  for (const [k, prop] of Object.entries(s.properties)) {
+    const ed = editor(prop, value[k], k);
+    if (required.has(k) && ed.node.tagName === "INPUT") ed.node.required = true;
+    getters[k] = ed.get;
+    if (ed.setOptions) choices[k] = ed.setOptions;
+    const desc = resolve(prop).description;
+    node.append(el("div", { class: "field" }, el("label", {}, k + (required.has(k) ? " *" : "")), ed.node, desc ? el("p", { class: "hint" }, desc) : null));
+  }
+  const get = () => Object.fromEntries(Object.entries(getters).map(([k, g]) => [k, g()]).filter(([, v]) => v !== undefined));
+  if (PROBES[s.def]) node.append(probeBar(PROBES[s.def], get, choices, node));
+  return { node, get };
+}
+
+// Dropdowns are filled on page load and whenever another field of the block changes.
+function probeBar(kind, get, choices, block) {
+  const result = el("span", { class: "result hint" }, "Check the connection with the values above, without saving.");
+  const more = el("details", {}, el("summary", {}, "Details"), el("pre"));
+  more.hidden = true;
+  const button = el("button", { type: "button" }, "Test");
+  const run = async () => {
+    button.disabled = true; result.className = "result"; result.textContent = "testing…"; more.hidden = true;
+    try {
+      const r = await api(`/api/probe/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(get()) });
+      result.className = "result " + (r.ok ? "ok" : "err");
+      result.textContent = r.message;
+      if (r.details.length) { more.querySelector("pre").textContent = r.details.join("\n"); more.hidden = false; }
+      for (const [field, values] of Object.entries(r.options)) choices[field]?.(values);
+    } catch (e) {
+      result.className = "result err"; result.textContent = e.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+  button.addEventListener("click", run);
+  if (Object.keys(choices).length) {
+    block.addEventListener("change", (e) => { if (e.target.tagName !== "SELECT") run(); });
+    queueMicrotask(run);
+  }
+  const bar = el("div", { class: "probe" }, button, result, more);
+  if (kind === "mcp") bar.insertBefore(authorizeButton(get, result, run, block), result);
+  return bar;
+}
+
+// Shown only for servers with OAuth on. The tab is opened before the request so popup blockers allow it.
+function authorizeButton(get, result, run, block) {
+  const button = el("button", { type: "button" }, "Authorize");
+  const sync = () => { button.hidden = !get().oauth; };
+  block.addEventListener("change", sync);
+  queueMicrotask(sync);
+  button.addEventListener("click", async () => {
+    const tab = window.open("about:blank", "_blank");
+    button.disabled = true; result.className = "result"; result.textContent = "starting login…";
+    try {
+      const r = await api("/api/oauth/authorize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(get()) });
+      if (r.url) {
+        tab.location = r.url;
+        result.textContent = "Finish the login in the opened tab, then press Test.";
+      } else {
+        tab?.close();
+        run();
+      }
+    } catch (e) {
+      tab?.close();
+      result.className = "result err"; result.textContent = e.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  return button;
+}
+
+function mapEditor(s, value) {
+  const rows = el("div"), entries = [];
+  const add = (k = "", v = "") => {
+    const kIn = el("input", { placeholder: "key", value: k }), vIn = el("input", { placeholder: "value", value: v });
+    const entry = { kIn, vIn };
+    const row = el("div", { class: "row" }, kIn, vIn, el("button", { type: "button", onclick: () => { row.remove(); entries.splice(entries.indexOf(entry), 1); } }, "×"));
+    entries.push(entry); rows.append(row);
+  };
+  Object.entries(value || {}).forEach(([k, v]) => add(k, v));
+  const node = el("div", {}, rows, el("button", { type: "button", onclick: () => add() }, "+ add"));
+  return {
+    node,
+    get: () => {
+      const out = Object.fromEntries(entries.filter(e => e.kIn.value.trim()).map(e => [e.kIn.value.trim(), e.vIn.value]));
+      return Object.keys(out).length ? out : s.nullable ? null : {};
+    },
+  };
+}
+
+function linesEditor(s, value) {
+  const input = el("textarea", { placeholder: "one per line" });
+  input.value = value.join("\n");
+  return { node: input, get: () => input.value.split("\n").map(x => x.trim()).filter(Boolean) };
+}
+
+// Saved items start collapsed to their name and a status badge; new items start open.
+function listEditor(s, value, key) {
+  const list = el("div"), items = [];
+  const add = (v, open) => {
+    const ed = editor(s.items, v);
+    const name = el("span", { class: "name" });
+    const badge = el("span", { class: "badge" });
+    const remove = el("button", { type: "button", class: "remove" }, "remove");
+    const box = el("details", { class: "item" }, el("summary", {}, name, badge, remove), el("div", { class: "body" }, ed.node));
+    box.open = open;
+    const entry = { key, get: ed.get, name, badge };
+    remove.addEventListener("click", (e) => {
+      e.preventDefault();
+      box.remove(); items.splice(items.indexOf(ed), 1); badges.delete(entry);
+    });
+    box.addEventListener("input", () => paintBadge(entry));
+    items.push(ed); list.append(box); badges.add(entry);
+    paintBadge(entry);
+  };
+  value.forEach(v => add(v, false));
+  return { node: el("div", {}, list, el("button", { type: "button", onclick: () => add(undefined, true) }, "+ add")), get: () => items.map(i => i.get()) };
+}
+
+const badges = new Set();
+let lastStatus = null;
+
+// ✓ works, ✗ failed (reason on hover), … not applied yet or still connecting.
+function itemState(key, name) {
+  if (!lastStatus || !name) return ["…", "hint", "not saved yet"];
+  if (key === "mcp_servers") {
+    if (lastStatus.mcp_servers.includes(name)) return ["✓", "ok", "connected"];
+    if (name in lastStatus.mcp_failed) return ["✗", "err", lastStatus.mcp_failed[name]];
+  }
+  if (key === "devices") {
+    const d = lastStatus.devices.find(d => d.name === name);
+    if (d?.state === "connected") return ["✓", "ok", `connected${d.device ? " to " + d.device : ""}`];
+    if (d?.state === "connecting") return ["…", "warn", "connecting"];
+    if (d) return ["✗", "err", d.state];
+  }
+  return ["…", "hint", "not saved yet"];
+}
+
+function paintBadge(entry) {
+  const name = entry.get().name || "";
+  entry.name.textContent = name || "new";
+  const [mark, cls, title] = itemState(entry.key, name);
+  entry.badge.textContent = mark; entry.badge.className = `badge ${cls}`; entry.badge.title = title;
+}
+
+function buildForm(values) {
+  const form = document.getElementById("form");
+  form.replaceChildren();
+  const getters = {};
+  for (const [k, prop] of Object.entries(schema.properties)) {
+    const ed = editor(prop, values[k], k);
+    getters[k] = ed.get;
+    // Only the field's own description: a model docstring is for code readers.
+    const desc = prop.description;
+    const body = resolve(prop).type === "object" || resolve(prop).type === "array"
+      ? ed.node : el("div", { class: "field" }, el("label", {}, k), ed.node);
+    form.append(el("section", { class: "card" }, el("h2", {}, TITLES[k] || k), desc ? el("p", { class: "hint" }, desc) : null, body));
+  }
+  return () => Object.fromEntries(Object.entries(getters).map(([k, g]) => [k, g()]).filter(([, v]) => v !== undefined));
+}
+
+// The page shows status only as badges on list items; this keeps them current.
+function renderStatus(st) {
+  lastStatus = st;
+  badges.forEach(paintBadge);
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => null);
+  if (!r.ok) {
+    const detail = Array.isArray(body?.detail) ? body.detail.map(d => `${d.loc.slice(1).join(".") || "value"}: ${d.msg}`).join("\n") : body?.detail || r.statusText;
+    throw new Error(detail);
+  }
+  return body;
+}
+
+async function refreshStatus() { try { renderStatus(await api("/healthcheck")); } catch {} }
+
+(async () => {
+  schema = await api("/api/settings/schema");
+  defs = schema.$defs || {};
+  const collect = buildForm(await api("/api/settings"));
+  const msg = document.getElementById("msg");
+  document.getElementById("save").addEventListener("click", async () => {
+    if (!document.getElementById("form").reportValidity()) return;
+    msg.className = ""; msg.textContent = "applying…";
+    try {
+      renderStatus(await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(collect()) }));
+      msg.className = "ok"; msg.textContent = "saved and applied";
+    } catch (e) { msg.className = "err"; msg.textContent = e.message; }
+  });
+  refreshStatus(); setInterval(refreshStatus, 3000);
+})();
+</script>
+</body>
+</html>
