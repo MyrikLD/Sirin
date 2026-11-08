@@ -23,8 +23,8 @@ docker compose up -d --build  # container; host networking, settings in ./data
 ```
 
 CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check and pytest, then builds the image for
-amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. The image is pinned to Python 3.12 because
-`pymicro-vad` has wheels only for that version.
+amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. The image runs Python 3.14; the package supports
+3.12 and newer (`pymicro-vad` ships abi3 wheels for x86_64 and aarch64).
 
 Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
 MCP isolation, partial rebuild, settings API) and need no network.

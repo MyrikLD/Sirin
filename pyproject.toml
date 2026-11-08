@@ -2,7 +2,7 @@
 name = "voice-orchestrator"
 version = "0.1.0"
 description = "Voice pipeline for ESPHome satellites with an LLM agent and MCP tools"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "aioesphomeapi>=46",
     "fastapi>=0.115",
