@@ -86,20 +86,9 @@ class LLMConfig(BaseModel):
 
 class McpServerConfig(BaseModel):
     name: str = Field(description="Prefix for the server's tool names")
-    url: str | None = Field(default=None, description="Streamable HTTP endpoint")
+    url: str = Field(description="Streamable HTTP endpoint")
     headers: dict[str, str] = Field(default_factory=dict, description="Extra HTTP headers, e.g. Authorization")
-    command: str | None = Field(default=None, description="Executable for a stdio server")
-    args: list[str] = Field(default_factory=list, description="Arguments for the stdio command, one per line")
-    env: dict[str, str] | None = Field(default=None, description="Environment for the stdio command")
-    oauth: bool = Field(default=False, description="Log in with OAuth (HTTP servers); use the Authorize button")
-
-    @model_validator(mode="after")
-    def _one_transport(self) -> "McpServerConfig":
-        if (self.url is None) == (self.command is None):
-            raise ValueError(f"MCP server {self.name!r}: set exactly one of url or command")
-        if self.oauth and self.url is None:
-            raise ValueError(f"MCP server {self.name!r}: OAuth works only with url")
-        return self
+    oauth: bool = Field(default=False, description="Log in with OAuth; use the Authorize button")
 
 
 class RuntimeSettings(BaseModel):

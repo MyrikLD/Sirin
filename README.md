@@ -7,7 +7,7 @@ its voice_assistant events itself.
 ```
 satellite ─ESPHome API─► voice-orchestrator ─► STT (Wyoming)
                            ├─ LLM (pydantic-ai, OpenAI-compatible /v1)
-                           ├─ MCP servers (HTTP or stdio), including the HA MCP Server
+                           ├─ MCP servers (streamable HTTP), including the HA MCP Server
                            └─ TTS (Wyoming) → WAV over HTTP → the device's media_player
 ```
 
@@ -32,10 +32,9 @@ Environment variables (or `.env`):
 | `VO_AUDIO_TTL_S` | `300` | How long a finished answer stays downloadable |
 | `VO_DATA_DIR` | `data` | Where the settings page stores its settings |
 
-The settings page has no login, and it can define a stdio MCP server, i.e. a command that runs
-on this machine. Keep the port reachable only from a trusted network.
+The settings page has no login. Keep the port reachable only from a trusted network.
 
-HTTP MCP servers can use OAuth: turn on `oauth`, save, and press **Authorize**. The provider's
+MCP servers can use OAuth: turn on `oauth`, save, and press **Authorize**. The provider's
 login opens in a new tab and returns to `/oauth/callback` at the address you opened the
 settings page with. Tokens are kept in `data/oauth/` and refreshed automatically.
 

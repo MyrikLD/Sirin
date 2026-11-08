@@ -5,8 +5,6 @@ import time
 from collections.abc import AsyncIterator
 
 import httpx2
-from fastmcp.client import Client as FastMCPClient
-from fastmcp.client.transports import StdioTransport
 from mcp.client.auth import OAuthClientProvider
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
@@ -139,7 +137,7 @@ async def explain_connect_error(server: McpServerConfig, exc: Exception) -> str:
     response", so the endpoint is asked once more without the MCP layer.
     """
     reason = f"{type(exc).__name__}: {exc}"
-    if server.url is None or server.oauth or isinstance(exc, OAuthRequired):
+    if server.oauth or isinstance(exc, OAuthRequired):
         return reason
     try:
         async with httpx2.AsyncClient(timeout=5) as client:
@@ -157,11 +155,6 @@ def build_toolset(
     server: McpServerConfig, oauth: OAuthManager, auth: OAuthClientProvider | None = None
 ) -> MCPToolset[None]:
     """auth overrides the stored-token OAuth provider, for the login flow itself."""
-    if server.url is not None:
-        if server.oauth and auth is None:
-            auth = oauth.provider(server)
-        return MCPToolset(server.url, id=server.name, headers=server.headers or None, auth=auth)
-    if server.command is not None:
-        transport = StdioTransport(command=server.command, args=server.args, env=server.env)
-        return MCPToolset(FastMCPClient(transport), id=server.name)
-    raise ValueError(f"MCP server {server.name!r} has no transport")
+    if server.oauth and auth is None:
+        auth = oauth.provider(server)
+    return MCPToolset(server.url, id=server.name, headers=server.headers or None, auth=auth)

@@ -217,8 +217,6 @@ class OAuthManager:
         redirect: Callable[[str], Awaitable[None]],
         callback: Callable[[], Awaitable[AuthorizationCodeResult]],
     ) -> OAuthClientProvider:
-        if server.url is None:
-            raise ValueError(f"MCP server {server.name!r}: OAuth needs a url")
         metadata = OAuthClientMetadata(
             client_name=APP_NAME,
             redirect_uris=[AnyUrl(redirect_uri)],
@@ -241,7 +239,7 @@ class OAuthManager:
         client ids, so a plain-HTTP orchestrator would otherwise POST to a /register that does not exist.
         """
         storage = self._storage(server)
-        if server.url is None or await storage.get_client_info() is not None:
+        if await storage.get_client_info() is not None:
             return
         metadata = await _authorization_server_metadata(server.url)
         if metadata is not None:

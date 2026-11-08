@@ -99,9 +99,8 @@ function editor(rawSchema, value, key) {
   const s = resolve(rawSchema);
   if (s["x-choices"]) return choiceEditor(s, value);
   if (s.type === "object" && s.properties) return objectEditor(s, value || {});
-  if (s.type === "object") return mapEditor(s, value);
+  if (s.type === "object") return mapEditor(value);
   if (s.type === "array" && resolve(s.items).type === "object") return listEditor(s, value || [], key);
-  if (s.type === "array") return linesEditor(s, value || []);
   if (s.type === "boolean") {
     const input = el("input", { type: "checkbox" }); input.checked = value ?? s.default ?? false;
     return { node: input, get: () => input.checked };
@@ -213,7 +212,7 @@ function authorizeButton(get, result, run, block) {
   return button;
 }
 
-function mapEditor(s, value) {
+function mapEditor(value) {
   const rows = el("div"), entries = [];
   const add = (k = "", v = "") => {
     const kIn = el("input", { placeholder: "key", value: k }), vIn = el("input", { placeholder: "value", value: v });
@@ -225,17 +224,8 @@ function mapEditor(s, value) {
   const node = el("div", {}, rows, el("button", { type: "button", onclick: () => add() }, "+ add"));
   return {
     node,
-    get: () => {
-      const out = Object.fromEntries(entries.filter(e => e.kIn.value.trim()).map(e => [e.kIn.value.trim(), e.vIn.value]));
-      return Object.keys(out).length ? out : s.nullable ? null : {};
-    },
+    get: () => Object.fromEntries(entries.filter(e => e.kIn.value.trim()).map(e => [e.kIn.value.trim(), e.vIn.value])),
   };
-}
-
-function linesEditor(s, value) {
-  const input = el("textarea", { placeholder: "one per line" });
-  input.value = value.join("\n");
-  return { node: input, get: () => input.value.split("\n").map(x => x.trim()).filter(Boolean) };
 }
 
 // Saved items start collapsed to their name and a status badge; new items start open.
