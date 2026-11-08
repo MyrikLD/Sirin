@@ -23,11 +23,11 @@ docker compose up -d --build  # container; host networking, settings in ./data
 ```
 
 CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check and pytest, then builds the image for
-amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. The image runs Python 3.14; the package supports
-3.12 and newer (`pymicro-vad` ships abi3 wheels for x86_64 and aarch64).
+amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
 Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
-MCP isolation, partial rebuild, settings API) and need no network.
+MCP isolation, partial rebuild, settings API). Tests need network once: `conftest.py` downloads the VAD model into
+the pytest cache.
 
 The settings page at `http://<host>:8765/` stores config in `data/settings.json` (git-ignored); process-level config
 comes from `VO_*` env vars or `.env` (`AppSettings`).
@@ -35,7 +35,7 @@ comes from `VO_*` env vars or `.env` (`AppSettings`).
 ## Architecture
 
 Two config layers in `config.py`:
-- `AppSettings` (env, read once at start): bind address, `public_url`, clip TTL, `data_dir`.
+- `AppSettings` (env, read once at start): bind address, `public_url`, clip TTL, `data_dir`, `vad_model`.
 - `RuntimeSettings` (edited on the web page, persisted by `SettingsStore`): devices, STT, TTS, VAD, LLM, MCP servers.
   `PUT /api/settings` calls `Runtime.apply()`, which saves it and under a lock rebuilds only what changed, with no
   restart needed:
@@ -55,7 +55,10 @@ Request flow for one utterance:
 2. `PipelineRun` (`pipeline.py`) speaks HA's event protocol (`VoiceAssistantEventType`). It creates a `LiveClip`
    and announces its URL in `RUN_START` before anything is synthesized.
 3. `_listen()` streams mic chunks to Wyoming ASR while `vad.Endpointer` decides end-of-utterance. The endpointer is
-   a port of HA's microVAD segmenter; its constants mirror HA's and are intentionally not configurable.
+   HA's segmenter on top of the Silero VAD ONNX model, run with onnxruntime: one `SileroModel` per process,
+   recurrent state per utterance. The code does not download the model: the Dockerfile adds it to the image
+   (pinned release, SHA-256 checked) and sets `VO_VAD_MODEL`; `Runtime` loads it at start and fails if the file is
+   missing. Its timings mirror HA's and its thresholds are Silero's defaults; they are intentionally not configurable.
 4. `think()` / `speak()` / `start_playback()` run concurrently in a `TaskGroup`: agent text deltas flow through a
    queue into `TextToSpeech.speak()`, which writes PCM into the `LiveClip`; once the first audio exists,
    `INTENT_PROGRESS tts_start_streaming=1` tells the device to start downloading.

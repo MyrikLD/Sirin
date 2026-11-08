@@ -11,9 +11,10 @@ dependencies = [
     "pydantic-ai-slim[openai,mcp]>=2.66",
     "pydantic>=2.7",
     "pydantic-settings>=2.6",
-    "pymicro-vad>=2.1",
     "uvicorn>=0.30",
     "wyoming>=1.6",
+    "onnxruntime>=1.31.1",
+    "numpy>=2.5.4",
 ]
 
 [project.scripts]

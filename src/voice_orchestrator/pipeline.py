@@ -11,7 +11,7 @@ from voice_orchestrator.agent import Agent
 from voice_orchestrator.clips import ClipStore, LiveClip
 from voice_orchestrator.config import VadConfig
 from voice_orchestrator.speech import SpeechToText, TextToSpeech
-from voice_orchestrator.vad import Endpointer, VadEvent
+from voice_orchestrator.vad import Endpointer, SileroModel, VadEvent
 
 _log = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ class Services(BaseModel):
     agent: Agent
     clips: ClipStore
     vad: VadConfig
+    vad_model: SileroModel
 
 
 class PipelineError(Exception):
@@ -123,7 +124,7 @@ class PipelineRun:
             self._send(Ev.VOICE_ASSISTANT_TTS_END, {"url": url})
 
     async def _listen(self) -> str:
-        endpointer = Endpointer(self._s.vad)
+        endpointer = Endpointer(self._s.vad, self._s.vad_model)
         async with self._s.stt.stream() as stt:
             while True:
                 try:

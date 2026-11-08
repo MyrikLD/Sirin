@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Self
 
 from jinja2 import TemplateSyntaxError
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -33,6 +34,7 @@ class AppSettings(BaseSettings):
     )
     audio_ttl_s: int = Field(default=300, description="How long a finished answer stays downloadable")
     data_dir: Path = Field(default=Path("data"), description="Where the settings page stores its settings")
+    vad_model: Path = Field(default=Path("models/silero_vad.onnx"), description="Silero VAD ONNX model file")
 
 
 class DeviceConfig(BaseModel):
@@ -133,7 +135,7 @@ class RuntimeSettings(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _unique_names(self) -> "RuntimeSettings":
+    def _unique_names(self) -> Self:
         groups = {"device": [d.name for d in self.devices], "MCP server": [m.name for m in self.mcp_servers]}
         for kind, names in groups.items():
             if len(names) != len(set(names)):

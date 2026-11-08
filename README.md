@@ -15,8 +15,13 @@ satellite ─ESPHome API─► voice-orchestrator ─► STT (Wyoming)
 
 ```sh
 pip install -e .
+curl -fL --create-dirs -o models/silero_vad.onnx \
+  https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx
+echo "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3  models/silero_vad.onnx" | sha256sum -c
 voice-orchestrator   # -v logs protocol events
 ```
+
+The Docker image already contains the VAD model.
 
 Or with Docker:
 
@@ -42,6 +47,7 @@ Environment variables (or `.env`):
 | `VO_HOST` / `VO_PORT` | `0.0.0.0` / `8765` | HTTP server address |
 | `VO_AUDIO_TTL_S` | `300` | How long a finished answer stays downloadable |
 | `VO_DATA_DIR` | `data` | Where the settings page stores its settings |
+| `VO_VAD_MODEL` | `models/silero_vad.onnx` | Silero VAD ONNX model file |
 
 The settings page has no login. Keep the port reachable only from a trusted network.
 
@@ -62,8 +68,8 @@ Every stage streams:
 
 - **mic → STT.** Chunks go to the Wyoming ASR as they arrive. The server decides where the
   utterance ends: the device streams until the server sends `STT_VAD_END`. End-of-utterance
-  detection is a port of Home Assistant's: the same microVAD model and segmenter, with the
-  same defaults (`vad.*` on the settings page).
+  detection is Home Assistant's segmenter on top of the Silero VAD model (`VO_VAD_MODEL`);
+  tune it with `vad.*` on the settings page.
 - **LLM → TTS.** The pydantic-ai agent yields text deltas, including what the model says
   between tool calls. If the TTS server accepts streaming input (`supports_synthesize_streaming`),
   the deltas go straight to it; otherwise the text is split into sentences and each one is

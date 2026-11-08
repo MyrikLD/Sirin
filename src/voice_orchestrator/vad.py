@@ -1,21 +1,27 @@
 import enum
+from pathlib import Path
 
-from pymicro_vad import MicroVad
+import numpy as np
+import onnxruntime
 
 from voice_orchestrator.config import VadConfig
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
-# microVAD scores 10 ms frames of 16 kHz mono int16.
-FRAME_BYTES = SAMPLE_RATE // 100 * SAMPLE_WIDTH
-FRAME_MS = 10
+# Silero scores 512-sample frames (32 ms at 16 kHz), the size of the satellite's audio chunks.
+FRAME_SAMPLES = 512
+FRAME_BYTES = FRAME_SAMPLES * SAMPLE_WIDTH
+FRAME_MS = FRAME_SAMPLES * 1000 // SAMPLE_RATE
+# Samples of the previous frame the model expects in front of each frame.
+CONTEXT_SAMPLES = 64
 
-# Home Assistant's segmenter values, tuned for the microVAD model.
+# Home Assistant's segmenter timings.
 SPEECH_MS = 300  # speech needed before an utterance starts
 COMMAND_MS = 1000  # shortest utterance: silence before this does not end it
 RESET_MS = 1000  # steady speech or silence that resets the counters
-START_THRESHOLD = 0.2  # speech probability that counts before the utterance
-SPEECH_THRESHOLD = 0.5  # speech probability that counts inside the utterance
+# Silero's own defaults: speech starts above 0.5 and goes on while it stays above 0.35.
+START_THRESHOLD = 0.5
+SPEECH_THRESHOLD = 0.35
 
 
 class VadEvent(enum.Enum):
@@ -25,17 +31,53 @@ class VadEvent(enum.Enum):
     TIMEOUT = enum.auto()
 
 
+class SileroModel:
+    """The Silero VAD network, loaded once and shared by every utterance."""
+
+    def __init__(self, path: Path) -> None:
+        if not path.is_file():
+            raise FileNotFoundError(f"Silero VAD model not found at {path}; set VO_VAD_MODEL to its path")
+        options = onnxruntime.SessionOptions()
+        # One frame is tiny: extra threads only add scheduling overhead.
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        self._session = onnxruntime.InferenceSession(
+            str(path), sess_options=options, providers=["CPUExecutionProvider"]
+        )
+
+    def stream(self) -> _Silero:
+        return _Silero(self._session)
+
+
+class _Silero:
+    """Speech probability per frame of one audio stream."""
+
+    def __init__(self, session: onnxruntime.InferenceSession) -> None:
+        self._session = session
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, CONTEXT_SAMPLES), dtype=np.float32)
+        self._rate = np.array(SAMPLE_RATE, dtype=np.int64)
+
+    def __call__(self, frame: bytes) -> float:
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32).reshape(1, -1) / 32768.0
+        model_input = np.concatenate([self._context, samples], axis=1)
+        probability, self._state = self._session.run(
+            None, {"input": model_input, "state": self._state, "sr": self._rate}
+        )
+        self._context = model_input[:, -CONTEXT_SAMPLES:]
+        return float(probability[0, 0])
+
+
 class Endpointer:
     """Finds where a spoken command starts and ends; the satellite streams until the server decides.
 
-    A port of Home Assistant's VoiceCommandSegmenter on top of the same microVAD model. Counters
-    only reset after RESET_MS of steady speech or silence, so a short pause or a short noise does
-    not end or start a command.
+    Home Assistant's VoiceCommandSegmenter on top of the Silero VAD model. Counters only reset after
+    RESET_MS of steady speech or silence, so a short pause or a short noise does not end or start a command.
     """
 
-    def __init__(self, cfg: VadConfig) -> None:
+    def __init__(self, cfg: VadConfig, model: SileroModel) -> None:
         self._cfg = cfg
-        self._vad = MicroVad()
+        self._vad = model.stream()
         self._pending = b""
         self._elapsed_ms = 0
         self._in_command = False
@@ -51,7 +93,7 @@ class Endpointer:
         self._pending = data[usable:]
         result = VadEvent.NONE
         for start in range(0, usable, FRAME_BYTES):
-            event = self._frame(self._vad.process_10ms(data[start : start + FRAME_BYTES]))
+            event = self._frame(self._vad(data[start : start + FRAME_BYTES]))
             if event is VadEvent.SPEECH_START:
                 result = event
             elif event is not VadEvent.NONE:
@@ -63,9 +105,6 @@ class Endpointer:
         limit = self._cfg.max_utterance_ms if self.heard_speech else self._cfg.no_speech_timeout_ms
         if self._elapsed_ms >= limit:
             return VadEvent.SPEECH_END if self.heard_speech else VadEvent.TIMEOUT
-        if probability < 0:
-            # microVAD returns a negative score until it has heard enough audio.
-            return VadEvent.NONE
         return self._in_utterance(probability) if self._in_command else self._before_utterance(probability)
 
     def _before_utterance(self, probability: float) -> VadEvent:

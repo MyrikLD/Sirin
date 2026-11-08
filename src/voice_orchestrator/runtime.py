@@ -9,6 +9,7 @@ from voice_orchestrator.pipeline import Services
 from voice_orchestrator.satellite import Satellite
 from voice_orchestrator.speech import SpeechToText, TextToSpeech
 from voice_orchestrator.status import Status, StatusBoard
+from voice_orchestrator.vad import SileroModel
 
 _log = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class Runtime:
         self.oauth = OAuthManager(app_settings.data_dir, self._on_authorized)
         self.board = StatusBoard()
         self._store = SettingsStore(app_settings.data_dir)
+        self._vad_model = SileroModel(app_settings.vad_model)
         self._lock = asyncio.Lock()
         self._services: Services | None = None
         self._satellites: list[Satellite] = []
@@ -69,6 +71,7 @@ class Runtime:
             agent=agent,
             clips=self.clips,
             vad=settings.vad,
+            vad_model=self._vad_model,
         )
 
         running = {s.cfg.name: s for s in self._satellites}

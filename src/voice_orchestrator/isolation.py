@@ -48,7 +48,7 @@ class IsolatedToolset(WrapperToolset[None]):
     async def list_tools(self) -> list[Tool]:
         return await self._mcp.list_tools()
 
-    async def _hold(self, connected: "asyncio.Future[None]") -> None:
+    async def _hold(self, connected: asyncio.Future[None]) -> None:
         try:
             async with self._mcp:
                 connected.set_result(None)
