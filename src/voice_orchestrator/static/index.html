@@ -284,7 +284,7 @@ function buildForm(values) {
   return () => collect(getters);
 }
 
-// The page shows status only as badges on list items; this keeps them current.
+// Repaints the list badges with the new status.
 function renderStatus(st) {
   lastStatus = st;
   badges.forEach(paintBadge);

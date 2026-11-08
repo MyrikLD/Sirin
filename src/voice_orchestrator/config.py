@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from voice_orchestrator.files import write_private
 from voice_orchestrator.prompt import compile_prompt
 
-# Schema extensions the settings page renders from; nothing about a block is hard-coded in the page.
+# Schema extensions the settings page renders from.
 # A field shown as a dropdown, filled from the block's probe suggestions.
 CHOICES = {"x-choices": True}
 # A field shown masked.
@@ -124,10 +124,8 @@ class RuntimeSettings(BaseModel):
     devices: list[DeviceConfig] = Field(
         default_factory=list, title="Devices", description="ESPHome satellites to serve"
     )
-    stt: SttConfig = Field(
-        default_factory=SttConfig, title="Speech-to-text", description="Turns the user's speech into text"
-    )
-    tts: TtsConfig = Field(default_factory=TtsConfig, title="Text-to-speech", description="Speaks the answer")
+    stt: SttConfig = Field(default_factory=SttConfig, title="Speech-to-text")
+    tts: TtsConfig = Field(default_factory=TtsConfig, title="Text-to-speech")
     vad: VadConfig = Field(default_factory=VadConfig, title="End of utterance (VAD)")
     llm: LLMConfig = Field(default_factory=LLMConfig, title="Language model")
     mcp_servers: list[McpServerConfig] = Field(

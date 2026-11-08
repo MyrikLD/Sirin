@@ -10,7 +10,7 @@ SAMPLE_WIDTH = 2
 FRAME_BYTES = SAMPLE_RATE // 100 * SAMPLE_WIDTH
 FRAME_MS = 10
 
-# Home Assistant's segmenter values, tuned for the microVAD model; HA does not expose them either.
+# Home Assistant's segmenter values, tuned for the microVAD model.
 SPEECH_MS = 300  # speech needed before an utterance starts
 COMMAND_MS = 1000  # shortest utterance: silence before this does not end it
 RESET_MS = 1000  # steady speech or silence that resets the counters

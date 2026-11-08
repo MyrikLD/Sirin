@@ -161,7 +161,8 @@ class OAuthManager:
             client["client_id"] != _url_client_id(redirect_uri)
         )
         if stale_address or stale_url_id:
-            # The client was set up for another address of this service, or under an older URL client id.
+            # The client was set up for another address of this service, or with a URL client id that lacks the
+            # app name; the provider would reject the first and show the second on its consent page.
             storage.reset()
         await self._preregister(server, redirect_uri)
         flow = _Flow()
