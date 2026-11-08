@@ -17,16 +17,20 @@ The Python environment is already active; do not use `uv run`.
 pip install -e .              # install (src layout, hatchling)
 voice-orchestrator -v         # run; -v enables DEBUG and protocol event logs
 python -m voice_orchestrator  # same entry point
-ruff check src && ruff format src   # lint/format (line-length 120)
+ruff check src tests && ruff format src tests   # lint/format (line-length 120)
+pytest                        # basic offline tests (tests/), about a second
 docker compose up -d --build  # container; host networking, settings in ./data
 ```
 
-CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff and an import check, then builds the image for
+CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check and pytest, then builds the image for
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. The image is pinned to Python 3.12 because
 `pymicro-vad` has wheels only for that version.
 
-There is no test suite. The settings page at `http://<host>:8765/` stores config in `data/settings.json`
-(git-ignored); process-level config comes from `VO_*` env vars or `.env` (`AppSettings`).
+Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
+MCP isolation, partial rebuild, settings API) and need no network.
+
+The settings page at `http://<host>:8765/` stores config in `data/settings.json` (git-ignored); process-level config
+comes from `VO_*` env vars or `.env` (`AppSettings`).
 
 ## Architecture
 

@@ -28,3 +28,14 @@ packages = ["src/voice_orchestrator"]
 
 [tool.ruff]
 line-length = 120
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

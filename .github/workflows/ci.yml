@@ -19,12 +19,16 @@ jobs:
         run: uv lock --check
       - name: Ruff
         run: |
-          uvx ruff check src
-          uvx ruff format --check src
+          uvx ruff check src tests
+          uvx ruff format --check src tests
       - name: Package imports
         run: |
           uv sync --locked --no-dev
           .venv/bin/python -c "import voice_orchestrator.web, voice_orchestrator.probes"
+      - name: Tests
+        run: |
+          uv sync --locked
+          .venv/bin/pytest -q
 
   docker:
     needs: lint
