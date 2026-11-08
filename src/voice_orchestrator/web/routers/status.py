@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from voice_orchestrator.web.deps import BoardDep, RuntimeDep
+from voice_orchestrator.web.deps import RuntimeDep
 
 router = APIRouter()
 
@@ -13,10 +13,11 @@ RESEND_S = 15
 
 
 @router.get("/api/status/stream")
-async def stream_status(runtime: RuntimeDep, board: BoardDep, request: Request) -> StreamingResponse:
+async def stream_status(runtime: RuntimeDep, request: Request) -> StreamingResponse:
     """Server-sent events: the full status now and after every change."""
 
     async def events() -> AsyncIterator[str]:
+        board = runtime.board
         while not board.closed and not await request.is_disconnected():
             changed = board.changed
             yield f"data: {runtime.status().model_dump_json()}\n\n"

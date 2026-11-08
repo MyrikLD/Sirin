@@ -3,7 +3,7 @@ import logging
 
 from voice_orchestrator.agent import Agent
 from voice_orchestrator.clips import ClipStore
-from voice_orchestrator.config import RuntimeSettings
+from voice_orchestrator.config import AppSettings, RuntimeSettings, SettingsStore
 from voice_orchestrator.oauth import OAuthManager
 from voice_orchestrator.pipeline import Services
 from voice_orchestrator.satellite import Satellite
@@ -20,16 +20,24 @@ class Runtime:
     tuning VAD or the voice does not drop the satellites or reconnect every MCP server.
     """
 
-    def __init__(self, clips: ClipStore, oauth: OAuthManager, board: StatusBoard) -> None:
-        self._clips = clips
-        self._oauth = oauth
-        self._board = board
+    def __init__(self, app_settings: AppSettings) -> None:
+        public_url = str(app_settings.public_url) if app_settings.public_url else None
+        self.clips = ClipStore(public_url, app_settings.port, app_settings.audio_ttl_s)
+        self.oauth = OAuthManager(app_settings.data_dir, self._on_authorized)
+        self.board = StatusBoard()
+        self._store = SettingsStore(app_settings.data_dir)
         self._lock = asyncio.Lock()
         self._services: Services | None = None
         self._satellites: list[Satellite] = []
         self.settings = RuntimeSettings()
 
+    async def start(self) -> None:
+        async with self._lock:
+            await self._apply(self._store.load(), reconnect_tools=False)
+
     async def apply(self, settings: RuntimeSettings) -> None:
+        """Saves the settings and rebuilds what they changed."""
+        self._store.save(settings)
         async with self._lock:
             await self._apply(settings, reconnect_tools=False)
 
@@ -37,6 +45,10 @@ class Runtime:
         """Rebuilds the agent with the current settings, e.g. after an MCP server was authorized."""
         async with self._lock:
             await self._apply(self.settings, reconnect_tools=True)
+
+    async def _on_authorized(self, server_name: str) -> None:
+        if any(m.name == server_name for m in self.settings.mcp_servers):
+            await self.reconnect_tools()
 
     async def _apply(self, settings: RuntimeSettings, reconnect_tools: bool) -> None:
         old, previous = self._services, self.settings
@@ -47,7 +59,7 @@ class Runtime:
             or settings.mcp_servers != previous.mcp_servers
         )
         if new_agent:
-            agent = Agent(settings.llm, settings.mcp_servers, self._oauth, self._board.touch)
+            agent = Agent(settings.llm, settings.mcp_servers, self.oauth, self.board.touch)
             await agent.start()
         else:
             agent = old.agent
@@ -55,7 +67,7 @@ class Runtime:
             stt=old.stt if old and settings.stt == previous.stt else SpeechToText(settings.stt),
             tts=old.tts if old and settings.tts == previous.tts else TextToSpeech(settings.tts),
             agent=agent,
-            clips=self._clips,
+            clips=self.clips,
             vad=settings.vad,
         )
 
@@ -68,7 +80,7 @@ class Runtime:
             else:
                 if satellite is not None:
                     await satellite.stop()
-                satellite = Satellite(device, services, self._board.touch)
+                satellite = Satellite(device, services, self.board.touch)
                 await satellite.start()
             satellites.append(satellite)
         for removed in running.values():
@@ -77,7 +89,7 @@ class Runtime:
         if new_agent and old is not None:
             await old.agent.close()
         self._services, self._satellites, self.settings = services, satellites, settings
-        self._board.touch()
+        self.board.touch()
         _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_status))
 
     async def stop(self) -> None:
@@ -98,4 +110,4 @@ class Runtime:
         if self._services is not None:
             await self._services.agent.close()
         self._services, self._satellites = None, []
-        self._board.touch()
+        self.board.touch()

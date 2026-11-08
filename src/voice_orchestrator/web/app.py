@@ -7,11 +7,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from voice_orchestrator.clips import ClipStore
-from voice_orchestrator.config import AppSettings, SettingsStore
-from voice_orchestrator.oauth import OAuthManager
+from voice_orchestrator.config import AppSettings
 from voice_orchestrator.runtime import Runtime
-from voice_orchestrator.status import StatusBoard
 from voice_orchestrator.web.routers import oauth, probes, settings, status, tts
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -43,31 +40,17 @@ def _is_loopback_ip(host: str) -> bool:
 
 
 def create_app(app_settings: AppSettings) -> FastAPI:
-    public_url = str(app_settings.public_url) if app_settings.public_url else None
-    clips = ClipStore(public_url, app_settings.port, app_settings.audio_ttl_s)
-    store = SettingsStore(app_settings.data_dir)
-
-    async def on_authorized(server_name: str) -> None:
-        if any(m.name == server_name for m in runtime.settings.mcp_servers):
-            await runtime.reconnect_tools()
-
-    oauth_manager = OAuthManager(app_settings.data_dir, on_authorized)
-    board = StatusBoard()
-    runtime = Runtime(clips, oauth_manager, board)
+    runtime = Runtime(app_settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         _check_public_url(app_settings)
-        await runtime.apply(store.load())
+        await runtime.start()
         yield
         await runtime.stop()
 
     app = FastAPI(title="voice-orchestrator", lifespan=lifespan)
-    app.state.clips = clips
-    app.state.store = store
     app.state.runtime = runtime
-    app.state.oauth = oauth_manager
-    app.state.board = board
 
     for module in (status, tts, settings, probes, oauth):
         app.include_router(module.router)

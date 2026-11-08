@@ -45,7 +45,7 @@ def main() -> None:
     config = uvicorn.Config(app, host=settings.host, port=settings.port, log_config=None, timeout_graceful_shutdown=3)
     # uvicorn re-raises the exit signal once shut down; uvicorn.run() swallows it the same way.
     with contextlib.suppress(KeyboardInterrupt):
-        _Server(config, app.state.board).run()
+        _Server(config, app.state.runtime.board).run()
 
 
 if __name__ == "__main__":

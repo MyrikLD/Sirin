@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from voice_orchestrator.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
 from voice_orchestrator.probes import ProbeResult, probe_device, probe_llm, probe_mcp, probe_stt, probe_tts
-from voice_orchestrator.web.deps import OAuthDep
+from voice_orchestrator.web.deps import RuntimeDep
 
 # Probes take the unsaved form values, so a block can be checked before it is applied.
 router = APIRouter(prefix="/api/probe")
@@ -24,8 +24,8 @@ async def post_probe_llm(cfg: LLMConfig) -> ProbeResult:
 
 
 @router.post("/mcp")
-async def post_probe_mcp(cfg: McpServerConfig, oauth: OAuthDep) -> ProbeResult:
-    return await probe_mcp(cfg, oauth)
+async def post_probe_mcp(cfg: McpServerConfig, runtime: RuntimeDep) -> ProbeResult:
+    return await probe_mcp(cfg, runtime.oauth)
 
 
 @router.post("/device")

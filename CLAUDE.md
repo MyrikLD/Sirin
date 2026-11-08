@@ -33,7 +33,7 @@ There is no test suite. The settings page at `http://<host>:8765/` stores config
 Two config layers in `config.py`:
 - `AppSettings` (env, read once at start): bind address, `public_url`, clip TTL, `data_dir`.
 - `RuntimeSettings` (edited on the web page, persisted by `SettingsStore`): devices, STT, TTS, VAD, LLM, MCP servers.
-  `PUT /api/settings` saves it and calls `Runtime.apply()`, which under a lock rebuilds only what changed, with no
+  `PUT /api/settings` calls `Runtime.apply()`, which saves it and under a lock rebuilds only what changed, with no
   restart needed:
   - the `Agent` (and its MCP connections) when `llm` or `mcp_servers` changed;
   - `SpeechToText` / `TextToSpeech` when their block changed;
@@ -80,8 +80,9 @@ pages do not hold up shutdown.
 `TextToSpeech` (`speech.py`) checks once whether the Wyoming server supports streaming input. If yes, it sends
 deltas as `SynthesizeChunk`; if not, `split_sentences` cuts the text and each sentence is a separate `Synthesize`.
 
-Web layer (`web/`): FastAPI app built in `create_app()`. Shared objects live on `app.state` and reach routes via
-`Annotated` dependencies in `web/deps.py`. The static mount at `/` must stay last.
+Web layer (`web/`): FastAPI app built in `create_app()`. `Runtime` is the only object on `app.state`; routes reach
+it through `RuntimeDep` (`web/deps.py`) and use its `clips`, `oauth` and `board`. The static mount at `/` must stay
+last.
 
 Settings page (`static/index.html`) is a single vanilla-JS file that renders forms from
 `GET /api/settings/schema` (the `RuntimeSettings` JSON schema). It hard-codes no block or field name; behaviour comes
@@ -95,5 +96,5 @@ from the schema, so changing `config.py` changes the page:
 
 OAuth for HTTP MCP servers (`oauth.py`): `OAuthManager` runs the login flow from the settings page (redirect back
 to `/oauth/callback` on the origin the page was opened from), stores tokens per server in `data/oauth/`, and on
-success calls `on_authorized`, which reconnects the MCP servers (`Runtime.reconnect_tools()`). During normal runs
+success calls back into `Runtime`, which reconnects the MCP servers (`Runtime.reconnect_tools()`). During normal runs
 the provider refuses to start an interactive login and raises `OAuthRequired` instead.

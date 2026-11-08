@@ -155,14 +155,9 @@ class OAuthManager:
         connect opens the server with the given provider; it must run outside the caller's task.
         """
         storage = self._storage(server)
-        client = storage.read().get("client", {})
-        stale_address = client.get("redirect_uris") and redirect_uri not in client["redirect_uris"]
-        stale_url_id = client.get("client_id", "").startswith(_origin(redirect_uri)) and (
-            client["client_id"] != _url_client_id(redirect_uri)
-        )
-        if stale_address or stale_url_id:
-            # The client was set up for another address of this service, or with a URL client id that lacks the
-            # app name; the provider would reject the first and show the second on its consent page.
+        registered = storage.read().get("client", {}).get("redirect_uris")
+        if registered and redirect_uri not in registered:
+            # The client was set up for another address of this service; the provider would reject it.
             storage.reset()
         await self._preregister(server, redirect_uri)
         flow = _Flow()

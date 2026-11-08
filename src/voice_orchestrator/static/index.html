@@ -317,7 +317,7 @@ async function api(path, body, method = "POST") {
     if (!document.getElementById("form").reportValidity()) return;
     msg.className = ""; msg.textContent = "applying…";
     try {
-      renderStatus(await api("/api/settings", collectForm(), "PUT"));
+      await api("/api/settings", collectForm(), "PUT");
       msg.className = "ok"; msg.textContent = "saved and applied";
     } catch (e) { msg.className = "err"; msg.textContent = e.message; }
   });

@@ -3,8 +3,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from voice_orchestrator.config import RuntimeSettings
-from voice_orchestrator.status import Status
-from voice_orchestrator.web.deps import RuntimeDep, StoreDep
+from voice_orchestrator.web.deps import RuntimeDep
 
 router = APIRouter(prefix="/api/settings")
 
@@ -19,8 +18,7 @@ async def get_settings_schema() -> dict[str, Any]:
     return RuntimeSettings.model_json_schema()
 
 
-@router.put("")
-async def put_settings(settings: RuntimeSettings, runtime: RuntimeDep, store: StoreDep) -> Status:
-    store.save(settings)
+# The page learns the resulting status from /api/status/stream.
+@router.put("", status_code=204)
+async def put_settings(settings: RuntimeSettings, runtime: RuntimeDep) -> None:
     await runtime.apply(settings)
-    return runtime.status()
