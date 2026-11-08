@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx2
 from mcp.client.auth import OAuthClientProvider
@@ -41,8 +41,15 @@ LLM_TIMEOUT_S = 60
 class Agent:
     """LLM with MCP tools; streams the spoken part of the answer as text deltas."""
 
-    def __init__(self, cfg: LLMConfig, mcp_servers: list[McpServerConfig], oauth: OAuthManager) -> None:
+    def __init__(
+        self,
+        cfg: LLMConfig,
+        mcp_servers: list[McpServerConfig],
+        oauth: OAuthManager,
+        on_status: Callable[[], None],
+    ) -> None:
         self._cfg = cfg
+        self._on_status = on_status
         self._prompt = compile_prompt(cfg.system_prompt)
         self._oauth = oauth
         self._mcp_servers = mcp_servers
@@ -72,7 +79,7 @@ class Agent:
     async def _connect(self, server: McpServerConfig) -> MCPToolset[None] | None:
         """The connected toolset, or None; either way tool_status says what happened."""
         ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-        self.tool_status[server.name] = ItemStatus(state="pending", detail="connecting")
+        self._set_status(server.name, ItemStatus(state="pending", detail="connecting"))
         try:
             toolset = build_toolset(server, self._oauth)
             self._holders.append(asyncio.create_task(self._hold(server.name, toolset, ready)))
@@ -80,11 +87,16 @@ class Agent:
         except Exception as exc:  # noqa: BLE001
             reason = await explain_connect_error(server, exc)
             _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, reason)
-            self.tool_status[server.name] = ItemStatus(state="error", detail=reason)
+            self._set_status(server.name, ItemStatus(state="error", detail=reason))
             return None
         _log.info("MCP server %s: %d tools", server.name, count)
-        self.tool_status[server.name] = ItemStatus(state="ok", detail=f"{count} tools")
+        self._set_status(server.name, ItemStatus(state="ok", detail=f"{count} tools"))
         return toolset
+
+    def _set_status(self, name: str, status: ItemStatus) -> None:
+        if self.tool_status.get(name) != status:
+            self.tool_status[name] = status
+            self._on_status()
 
     def _render_prompt(self) -> str:
         return self._prompt.render()
@@ -136,7 +148,7 @@ class Agent:
                 ready.set_exception(exc)
             else:
                 _log.exception("MCP server %s connection lost", name)
-                self.tool_status[name] = ItemStatus(state="error", detail=f"connection lost: {exc}")
+                self._set_status(name, ItemStatus(state="error", detail=f"connection lost: {exc}"))
 
 
 async def explain_connect_error(server: McpServerConfig, exc: Exception) -> str:

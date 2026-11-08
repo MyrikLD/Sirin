@@ -16,6 +16,4 @@ ENV PATH=/app/.venv/bin:$PATH \
     VO_DATA_DIR=/data
 VOLUME /data
 EXPOSE 8765
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"VO_PORT\", \"8765\")}/healthcheck', timeout=4)"
 ENTRYPOINT ["voice-orchestrator"]

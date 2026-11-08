@@ -228,7 +228,7 @@ function mapEditor(value) {
 
 // Saved items start collapsed to their name and a status badge; new items start open.
 function listEditor(s, value, key) {
-  const list = el("div"), items = [];
+  const list = el("div"), entries = new Set();
   const add = (v, open) => {
     const ed = editor(s.items, v);
     const name = el("span", { class: "name" });
@@ -239,14 +239,14 @@ function listEditor(s, value, key) {
     const entry = { key, get: ed.get, name, badge };
     remove.addEventListener("click", (e) => {
       e.preventDefault();
-      box.remove(); items.splice(items.indexOf(ed), 1); badges.delete(entry);
+      box.remove(); entries.delete(entry); badges.delete(entry);
     });
     box.addEventListener("input", () => paintBadge(entry));
-    items.push(ed); list.append(box); badges.add(entry);
+    entries.add(entry); list.append(box); badges.add(entry);
     paintBadge(entry);
   };
   value.forEach(v => add(v, false));
-  return { node: el("div", {}, list, el("button", { type: "button", onclick: () => add(undefined, true) }, "+ add")), get: () => items.map(i => i.get()) };
+  return { node: el("div", {}, list, el("button", { type: "button", onclick: () => add(undefined, true) }, "+ add")), get: () => [...entries].map(e => e.get()) };
 }
 
 const badges = new Set();
@@ -307,7 +307,6 @@ async function api(path, body, method = "POST") {
   return answer;
 }
 
-async function refreshStatus() { try { renderStatus(await api("/healthcheck")); } catch {} }
 
 (async () => {
   schema = await api("/api/settings/schema");
@@ -322,7 +321,8 @@ async function refreshStatus() { try { renderStatus(await api("/healthcheck")); 
       msg.className = "ok"; msg.textContent = "saved and applied";
     } catch (e) { msg.className = "err"; msg.textContent = e.message; }
   });
-  refreshStatus(); setInterval(refreshStatus, 3000);
+  // The server pushes the status on every change; EventSource reconnects by itself.
+  new EventSource("/api/status/stream").onmessage = (e) => renderStatus(JSON.parse(e.data));
 })();
 </script>
 </body>

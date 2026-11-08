@@ -36,9 +36,10 @@ def voice_support_problem(info: DeviceInfo, api_version: APIVersion | None) -> s
 class Satellite:
     """Holds the API connection to one ESPHome satellite and runs its pipelines."""
 
-    def __init__(self, cfg: DeviceConfig, services: Services) -> None:
+    def __init__(self, cfg: DeviceConfig, services: Services, on_status: Callable[[], None]) -> None:
         self.cfg = cfg
-        self.status = ItemStatus(state="pending", detail="connecting")
+        self._on_status = on_status
+        self._status = ItemStatus(state="pending", detail="connecting")
         self.audio_base_url: str | None = None
         self.services = services
         self._client = device_client(cfg, "voice-orchestrator")
@@ -52,6 +53,16 @@ class Satellite:
         self._unsubscribe: Callable[[], None] | None = None
         self._run: PipelineRun | None = None
         self._task: asyncio.Task[None] | None = None
+
+    @property
+    def status(self) -> ItemStatus:
+        return self._status
+
+    @status.setter
+    def status(self, value: ItemStatus) -> None:
+        if value != self._status:
+            self._status = value
+            self._on_status()
 
     async def start(self) -> None:
         await self._reconnect.start()

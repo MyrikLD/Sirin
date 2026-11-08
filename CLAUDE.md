@@ -69,10 +69,12 @@ Request flow for one utterance:
 - Tools are prefixed `<server>_`. A server that fails to connect is skipped and reported in
   `tool_status`, not raised.
 
-Status (`status.py`): `GET /healthcheck` returns `Status.items[<settings list>][<item name>]` as an `ItemStatus`
-(`ok | pending | error` + `detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current,
-including an MCP connection lost after startup. The page shows them as badges on list items without knowing which
-list is which.
+Status (`status.py`): `Status.items[<settings list>][<item name>]` is an `ItemStatus` (`ok | pending | error` +
+`detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current, including an MCP connection
+lost after startup, and call `StatusBoard.touch()` only on a real change. The page listens to
+`GET /api/status/stream` (server-sent events: the full status now and after each change) and shows badges on list
+items without knowing which list is which. On the exit signal `__main__._Server` closes the board so open settings
+pages do not hold up shutdown.
 - The system prompt is a Jinja template (`prompt.py`) re-rendered before each request.
 
 `TextToSpeech` (`speech.py`) checks once whether the Wyoming server supports streaming input. If yes, it sends

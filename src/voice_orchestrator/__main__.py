@@ -1,21 +1,28 @@
 import argparse
+import asyncio
+import contextlib
 import logging
 import os
+from types import FrameType
 
 import uvicorn
 from pydantic import ValidationError
 
 from voice_orchestrator.config import AppSettings
+from voice_orchestrator.status import StatusBoard
 from voice_orchestrator.web import create_app
 
 
-class _SkipHealthcheck(logging.Filter):
-    """Drops access-log lines for /healthcheck, which the settings page polls every few seconds."""
+class _Server(uvicorn.Server):
+    """Closes the status streams on the exit signal; otherwise shutdown would wait for every open settings page."""
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        # uvicorn passes (client, method, path, http_version, status) as the record args.
-        args = record.args
-        return not (isinstance(args, tuple) and len(args) > 2 and str(args[2]).startswith("/healthcheck"))
+    def __init__(self, config: uvicorn.Config, board: StatusBoard) -> None:
+        super().__init__(config)
+        self._board = board
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        super().handle_exit(sig, frame)
+        asyncio.get_event_loop().call_soon_threadsafe(self._board.close)
 
 
 def main() -> None:
@@ -29,13 +36,16 @@ def main() -> None:
     )
     if not args.verbose:
         logging.getLogger("aioesphomeapi").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").addFilter(_SkipHealthcheck())
 
     try:
         settings = AppSettings()
     except ValidationError as exc:
         raise SystemExit(f"Bad environment (VO_* variables or .env):\n{exc}") from exc
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_config=None)
+    app = create_app(settings)
+    config = uvicorn.Config(app, host=settings.host, port=settings.port, log_config=None, timeout_graceful_shutdown=3)
+    # uvicorn re-raises the exit signal once shut down; uvicorn.run() swallows it the same way.
+    with contextlib.suppress(KeyboardInterrupt):
+        _Server(config, app.state.board).run()
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from voice_orchestrator.oauth import OAuthManager
 from voice_orchestrator.pipeline import Services
 from voice_orchestrator.satellite import Satellite
 from voice_orchestrator.speech import SpeechToText, TextToSpeech
-from voice_orchestrator.status import Status
+from voice_orchestrator.status import Status, StatusBoard
 
 _log = logging.getLogger(__name__)
 
@@ -20,9 +20,10 @@ class Runtime:
     tuning VAD or the voice does not drop the satellites or reconnect every MCP server.
     """
 
-    def __init__(self, clips: ClipStore, oauth: OAuthManager) -> None:
+    def __init__(self, clips: ClipStore, oauth: OAuthManager, board: StatusBoard) -> None:
         self._clips = clips
         self._oauth = oauth
+        self._board = board
         self._lock = asyncio.Lock()
         self._services: Services | None = None
         self._satellites: list[Satellite] = []
@@ -46,7 +47,7 @@ class Runtime:
             or settings.mcp_servers != previous.mcp_servers
         )
         if new_agent:
-            agent = Agent(settings.llm, settings.mcp_servers, self._oauth)
+            agent = Agent(settings.llm, settings.mcp_servers, self._oauth, self._board.touch)
             await agent.start()
         else:
             agent = old.agent
@@ -67,7 +68,7 @@ class Runtime:
             else:
                 if satellite is not None:
                     await satellite.stop()
-                satellite = Satellite(device, services)
+                satellite = Satellite(device, services, self._board.touch)
                 await satellite.start()
             satellites.append(satellite)
         for removed in running.values():
@@ -76,6 +77,7 @@ class Runtime:
         if new_agent and old is not None:
             await old.agent.close()
         self._services, self._satellites, self.settings = services, satellites, settings
+        self._board.touch()
         _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_status))
 
     async def stop(self) -> None:
@@ -96,3 +98,4 @@ class Runtime:
         if self._services is not None:
             await self._services.agent.close()
         self._services, self._satellites = None, []
+        self._board.touch()
