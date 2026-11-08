@@ -18,6 +18,17 @@ pip install -e .
 voice-orchestrator   # -v logs protocol events
 ```
 
+Or with Docker:
+
+```sh
+docker compose up -d --build
+```
+
+The compose file uses host networking, because satellites download answers from the address
+the orchestrator has on its route to them. Settings are kept in `./data`, environment in `.env`.
+CI publishes a multi-arch image (amd64, arm64) to `ghcr.io/<owner>/voice-orchestrator`; set
+`VO_IMAGE` to it to pull instead of building.
+
 Then open `http://<host>:8765/` and fill in devices, STT, TTS, LLM and MCP servers.
 Each block has a **Test** button: it checks the connection with the unsaved values and
 fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
