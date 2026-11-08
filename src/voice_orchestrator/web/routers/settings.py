@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from voice_orchestrator.config import RuntimeSettings
-from voice_orchestrator.runtime import Status
+from voice_orchestrator.status import Status
 from voice_orchestrator.web.deps import RuntimeDep, StoreDep
 
 router = APIRouter(prefix="/api/settings")

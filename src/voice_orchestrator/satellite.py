@@ -14,6 +14,7 @@ from aioesphomeapi import (
 
 from voice_orchestrator.config import DeviceConfig
 from voice_orchestrator.pipeline import PipelineRun, Services
+from voice_orchestrator.status import ItemStatus
 
 _log = logging.getLogger(__name__)
 
@@ -37,8 +38,7 @@ class Satellite:
 
     def __init__(self, cfg: DeviceConfig, services: Services) -> None:
         self.cfg = cfg
-        self.state = "connecting"
-        self.device_name: str | None = None
+        self.status = ItemStatus(state="pending", detail="connecting")
         self.audio_base_url: str | None = None
         self.services = services
         self._client = device_client(cfg, "voice-orchestrator")
@@ -63,9 +63,8 @@ class Satellite:
 
     async def _on_connect(self) -> None:
         info = await self._client.device_info()
-        self.device_name = info.friendly_name or info.name
         if problem := voice_support_problem(info, self._client.api_version):
-            self.state = problem
+            self.status = ItemStatus(state="error", detail=problem)
             _log.error("[%s] %s: %s", self.cfg.name, info.name, problem)
             return
 
@@ -75,17 +74,17 @@ class Satellite:
             handle_audio=self._handle_audio,
         )
         self.audio_base_url = await self.services.clips.base_url_for(self.cfg.host)
-        self.state = "connected"
+        self.status = ItemStatus(state="ok", detail=f"connected to {info.friendly_name or info.name}")
         _log.info("[%s] answers are served from %s", self.cfg.name, self.audio_base_url)
         _log.info("[%s] connected to %s (ESPHome %s)", self.cfg.name, info.name, info.esphome_version)
 
     async def _on_connect_error(self, exc: Exception) -> None:
-        self.state = f"{type(exc).__name__}: {exc}"
+        self.status = ItemStatus(state="error", detail=f"{type(exc).__name__}: {exc}")
 
     async def _on_disconnect(self, expected_disconnect: bool) -> None:
         _log.info("[%s] disconnected (expected=%s)", self.cfg.name, expected_disconnect)
         self._unsubscribe = None
-        self.state = "connecting"
+        self.status = ItemStatus(state="pending", detail="reconnecting")
         await self._cancel_run()
 
     async def _handle_start(

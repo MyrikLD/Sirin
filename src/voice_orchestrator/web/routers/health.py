@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from voice_orchestrator.runtime import Status
+from voice_orchestrator.status import Status
 from voice_orchestrator.web.deps import RuntimeDep
 
 router = APIRouter()

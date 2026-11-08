@@ -67,7 +67,12 @@ Request flow for one utterance:
   cancel scope into the caller. `isolation.run_isolated` applies the same workaround for one-shot MCP calls.
   Keep MCP connects out of the caller's task.
 - Tools are prefixed `<server>_`. A server that fails to connect is skipped and reported in
-  `tool_failures` (shown on the status page), not raised.
+  `tool_status`, not raised.
+
+Status (`status.py`): `GET /healthcheck` returns `Status.items[<settings list>][<item name>]` as an `ItemStatus`
+(`ok | pending | error` + `detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current,
+including an MCP connection lost after startup. The page shows them as badges on list items without knowing which
+list is which.
 - The system prompt is a Jinja template (`prompt.py`) re-rendered before each request.
 
 `TextToSpeech` (`speech.py`) checks once whether the Wyoming server supports streaming input. If yes, it sends
@@ -77,12 +82,14 @@ Web layer (`web/`): FastAPI app built in `create_app()`. Shared objects live on 
 `Annotated` dependencies in `web/deps.py`. The static mount at `/` must stay last.
 
 Settings page (`static/index.html`) is a single vanilla-JS file that renders forms from
-`GET /api/settings/schema` (the `RuntimeSettings` JSON schema). Consequences when changing `config.py`:
-- Field `description`s become UI help text.
+`GET /api/settings/schema` (the `RuntimeSettings` JSON schema). It hard-codes no block or field name; behaviour comes
+from the schema, so changing `config.py` changes the page:
+- `title` on a `RuntimeSettings` field is the section heading; field `description`s become help text.
+- `model_config = probed("/api/probe/...")` (`x-probe`) gives a block a Test button that POSTs its unsaved values
+  there (`probes.py`).
 - `json_schema_extra=CHOICES` (`x-choices`) makes a field a dropdown filled from that block's probe suggestions.
-- The `PROBES` map in `index.html` binds schema definition names (`SttConfig`, `LLMConfig`, …) to
-  `POST /api/probe/<kind>` (`probes.py`), which tests the unsaved values. Renaming a config model breaks this map.
-- Field names matching `psk|key|token|password` are rendered as secrets.
+- `json_schema_extra=SECRET` (`format: password`) masks a field.
+- `x-authorize` on a boolean field shows an Authorize button while the field is on (OAuth for MCP servers).
 
 OAuth for HTTP MCP servers (`oauth.py`): `OAuthManager` runs the login flow from the settings page (redirect back
 to `/oauth/callback` on the origin the page was opened from), stores tokens per server in `data/oauth/`, and on

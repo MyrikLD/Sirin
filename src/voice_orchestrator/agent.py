@@ -29,6 +29,7 @@ from voice_orchestrator.config import LLMConfig, McpServerConfig
 from voice_orchestrator.isolation import run_isolated
 from voice_orchestrator.oauth import OAuthManager, OAuthRequired
 from voice_orchestrator.prompt import compile_prompt
+from voice_orchestrator.status import ItemStatus
 
 _log = logging.getLogger(__name__)
 
@@ -49,20 +50,16 @@ class Agent:
         self._closing = asyncio.Event()
         self._holders: list[asyncio.Task[None]] = []
         self._agent: PydanticAgent[None, str] | None = None
-        self.tool_servers: list[str] = []
-        self.tool_failures: dict[str, str] = {}
+        self.tool_status: dict[str, ItemStatus] = {}
 
     async def start(self) -> None:
         # All servers connect at once, so startup waits for the slowest one rather than their sum.
         results = await asyncio.gather(*(self._connect(server) for server in self._mcp_servers))
-        toolsets: list[AbstractToolset[None]] = []
-        for server, result in zip(self._mcp_servers, results, strict=True):
-            if isinstance(result, str):
-                _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, result)
-                self.tool_failures[server.name] = result
-            else:
-                toolsets.append(result.prefixed(server.name))
-                self.tool_servers.append(server.name)
+        toolsets: list[AbstractToolset[None]] = [
+            toolset.prefixed(server.name)
+            for server, toolset in zip(self._mcp_servers, results, strict=True)
+            if toolset is not None
+        ]
 
         provider = OpenAICompatibleProvider("local", base_url=self._cfg.base_url, api_key=self._cfg.api_key or "none")
         self._agent = PydanticAgent(
@@ -72,16 +69,22 @@ class Agent:
             model_settings=ModelSettings(temperature=self._cfg.temperature, timeout=LLM_TIMEOUT_S),
         )
 
-    async def _connect(self, server: McpServerConfig) -> MCPToolset[None] | str:
-        """The connected toolset, or why it could not connect."""
+    async def _connect(self, server: McpServerConfig) -> MCPToolset[None] | None:
+        """The connected toolset, or None; either way tool_status says what happened."""
         ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        self.tool_status[server.name] = ItemStatus(state="pending", detail="connecting")
         try:
             toolset = build_toolset(server, self._oauth)
             self._holders.append(asyncio.create_task(self._hold(server.name, toolset, ready)))
-            _log.info("MCP server %s: %d tools", server.name, await ready)
-            return toolset
+            count = await ready
         except Exception as exc:  # noqa: BLE001
-            return await explain_connect_error(server, exc)
+            reason = await explain_connect_error(server, exc)
+            _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, reason)
+            self.tool_status[server.name] = ItemStatus(state="error", detail=reason)
+            return None
+        _log.info("MCP server %s: %d tools", server.name, count)
+        self.tool_status[server.name] = ItemStatus(state="ok", detail=f"{count} tools")
+        return toolset
 
     def _render_prompt(self) -> str:
         return self._prompt.render()
@@ -133,6 +136,7 @@ class Agent:
                 ready.set_exception(exc)
             else:
                 _log.exception("MCP server %s connection lost", name)
+                self.tool_status[name] = ItemStatus(state="error", detail=f"connection lost: {exc}")
 
 
 async def explain_connect_error(server: McpServerConfig, exc: Exception) -> str:

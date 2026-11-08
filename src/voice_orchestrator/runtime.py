@@ -1,8 +1,6 @@
 import asyncio
 import logging
 
-from pydantic import BaseModel, Field
-
 from voice_orchestrator.agent import Agent
 from voice_orchestrator.clips import ClipStore
 from voice_orchestrator.config import RuntimeSettings
@@ -10,21 +8,9 @@ from voice_orchestrator.oauth import OAuthManager
 from voice_orchestrator.pipeline import Services
 from voice_orchestrator.satellite import Satellite
 from voice_orchestrator.speech import SpeechToText, TextToSpeech
+from voice_orchestrator.status import Status
 
 _log = logging.getLogger(__name__)
-
-
-class DeviceStatus(BaseModel):
-    name: str = Field(description="Device label from the settings")
-    host: str = Field(description="Device address")
-    state: str = Field(description="connecting, connected or an error")
-    device: str | None = Field(default=None, description="Name the device reports about itself")
-
-
-class Status(BaseModel):
-    devices: list[DeviceStatus]
-    mcp_servers: list[str] = Field(description="MCP servers whose tools are available")
-    mcp_failed: dict[str, str] = Field(description="MCP servers that failed to connect, with the error")
 
 
 class Runtime:
@@ -90,7 +76,7 @@ class Runtime:
         if new_agent and old is not None:
             await old.agent.close()
         self._services, self._satellites, self.settings = services, satellites, settings
-        _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_servers))
+        _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_status))
 
     async def stop(self) -> None:
         async with self._lock:
@@ -98,12 +84,10 @@ class Runtime:
 
     def status(self) -> Status:
         return Status(
-            devices=[
-                DeviceStatus(name=s.cfg.name, host=s.cfg.host, state=s.state, device=s.device_name)
-                for s in self._satellites
-            ],
-            mcp_servers=self._services.agent.tool_servers if self._services else [],
-            mcp_failed=self._services.agent.tool_failures if self._services else {},
+            items={
+                "devices": {s.cfg.name: s.status for s in self._satellites},
+                "mcp_servers": dict(self._services.agent.tool_status) if self._services else {},
+            }
         )
 
     async def _stop(self) -> None:

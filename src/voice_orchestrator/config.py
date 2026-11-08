@@ -1,14 +1,22 @@
 from pathlib import Path
 
 from jinja2 import TemplateSyntaxError
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from voice_orchestrator.files import write_private
 from voice_orchestrator.prompt import compile_prompt
 
-# Marks a field the settings page shows as a dropdown filled from the block's probe.
+# Schema extensions the settings page renders from; nothing about a block is hard-coded in the page.
+# A field shown as a dropdown, filled from the block's probe suggestions.
 CHOICES = {"x-choices": True}
+# A field shown masked.
+SECRET = {"format": "password"}
+
+
+def probed(path: str) -> ConfigDict:
+    """A block with a Test button that POSTs the block's unsaved values to path."""
+    return ConfigDict(json_schema_extra={"x-probe": path})
 
 
 class AppSettings(BaseSettings):
@@ -28,19 +36,27 @@ class AppSettings(BaseSettings):
 
 
 class DeviceConfig(BaseModel):
+    model_config = probed("/api/probe/device")
+
     name: str = Field(description="Label used in logs")
     host: str = Field(description="Satellite IP or hostname")
     port: int = Field(default=6053, description="ESPHome native API port")
-    noise_psk: str | None = Field(default=None, description="api.encryption.key from the ESPHome YAML")
+    noise_psk: str | None = Field(
+        default=None, description="api.encryption.key from the ESPHome YAML", json_schema_extra=SECRET
+    )
 
 
 class SttConfig(BaseModel):
+    model_config = probed("/api/probe/stt")
+
     host: str = "127.0.0.1"
     port: int = 10300
     language: str = Field(default="ru", json_schema_extra=CHOICES)
 
 
 class TtsConfig(BaseModel):
+    model_config = probed("/api/probe/tts")
+
     host: str = "127.0.0.1"
     port: int = 10200
     voice: str | None = Field(
@@ -59,9 +75,13 @@ class VadConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
+    model_config = probed("/api/probe/llm")
+
     base_url: str = Field(default="http://127.0.0.1:8080/v1", description="OpenAI-compatible base URL")
     model: str = Field(default="", json_schema_extra=CHOICES)
-    api_key: str | None = Field(default=None, description="Bearer token, if the server needs one")
+    api_key: str | None = Field(
+        default=None, description="Bearer token, if the server needs one", json_schema_extra=SECRET
+    )
     system_prompt: str = Field(
         default=(
             "You are a smart home voice assistant. Reply in the language the user speaks, briefly, "
@@ -85,21 +105,34 @@ class LLMConfig(BaseModel):
 
 
 class McpServerConfig(BaseModel):
+    model_config = probed("/api/probe/mcp")
+
     name: str = Field(description="Prefix for the server's tool names")
     url: str = Field(description="Streamable HTTP endpoint")
     headers: dict[str, str] = Field(default_factory=dict, description="Extra HTTP headers, e.g. Authorization")
-    oauth: bool = Field(default=False, description="Log in with OAuth; use the Authorize button")
+    oauth: bool = Field(
+        default=False,
+        description="Log in with OAuth; use the Authorize button",
+        # While this field is on, the block gets an Authorize button that POSTs its values here.
+        json_schema_extra={"x-authorize": "/api/oauth/authorize"},
+    )
 
 
 class RuntimeSettings(BaseModel):
     """Everything edited on the settings page; applied without a restart."""
 
-    devices: list[DeviceConfig] = Field(default_factory=list, description="ESPHome satellites to serve")
-    stt: SttConfig = Field(default_factory=SttConfig, description="Turns the user's speech into text")
-    tts: TtsConfig = Field(default_factory=TtsConfig, description="Speaks the answer")
-    vad: VadConfig = Field(default_factory=VadConfig)
-    llm: LLMConfig = Field(default_factory=LLMConfig)
-    mcp_servers: list[McpServerConfig] = Field(default_factory=list, description="Tool servers for the LLM")
+    devices: list[DeviceConfig] = Field(
+        default_factory=list, title="Devices", description="ESPHome satellites to serve"
+    )
+    stt: SttConfig = Field(
+        default_factory=SttConfig, title="Speech-to-text", description="Turns the user's speech into text"
+    )
+    tts: TtsConfig = Field(default_factory=TtsConfig, title="Text-to-speech", description="Speaks the answer")
+    vad: VadConfig = Field(default_factory=VadConfig, title="End of utterance (VAD)")
+    llm: LLMConfig = Field(default_factory=LLMConfig, title="Language model")
+    mcp_servers: list[McpServerConfig] = Field(
+        default_factory=list, title="MCP servers", description="Tool servers for the LLM"
+    )
 
     @model_validator(mode="after")
     def _unique_names(self) -> "RuntimeSettings":

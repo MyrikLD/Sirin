@@ -63,13 +63,9 @@
 </main>
 <div class="bar"><div><button class="primary" id="save">Save and apply</button><span id="msg"></span></div></div>
 <script>
-const TITLES = {
-  devices: "Devices", stt: "Speech-to-text", tts: "Text-to-speech",
-  vad: "End of utterance (VAD)", llm: "Language model", mcp_servers: "MCP servers",
-};
-// Settings models that have a connection test, keyed by their JSON schema definition name.
-const PROBES = { SttConfig: "stt", TtsConfig: "tts", LLMConfig: "llm", McpServerConfig: "mcp", DeviceConfig: "device" };
-const SECRET = /(psk|key|token|password)/i;
+// The form is rendered from the RuntimeSettings JSON schema and its x- extensions (see config.py):
+// x-choices (dropdown), x-probe (Test button endpoint), x-authorize (Authorize button endpoint),
+// format: password (masked input), title (section heading).
 let schema, defs;
 
 const el = (tag, attrs = {}, ...children) => {
@@ -107,7 +103,7 @@ function editor(rawSchema, value, key) {
   const numeric = s.type === "integer" || s.type === "number";
   const long = typeof (value ?? s.default) === "string" && (value ?? s.default).length > 80;
   const input = long ? el("textarea", { class: "long" }) : el("input", {
-    type: numeric ? "number" : SECRET.test(key || "") ? "password" : "text",
+    type: numeric ? "number" : s.format === "password" ? "password" : "text",
     ...(s.type === "number" ? { step: "any" } : {}),
   });
   input.value = value ?? "";
@@ -149,12 +145,15 @@ function objectEditor(s, value) {
     node.append(el("div", { class: "field" }, el("label", {}, k + (required.has(k) ? " *" : "")), ed.node, desc ? el("p", { class: "hint" }, desc) : null));
   }
   const get = () => collect(getters);
-  if (PROBES[s.def]) node.append(probeBar(PROBES[s.def], get, choices, node));
+  if (s["x-probe"]) {
+    const [authField, authPath] = Object.entries(s.properties).map(([k, p]) => [k, p["x-authorize"]]).find(([, path]) => path) || [];
+    node.append(probeBar(s["x-probe"], get, choices, node, authPath && { field: authField, path: authPath }));
+  }
   return { node, get };
 }
 
 // Dropdowns are filled on page load and whenever another field of the block changes.
-function probeBar(kind, get, choices, block) {
+function probeBar(path, get, choices, block, authorize) {
   const result = el("span", { class: "result hint" }, "Check the connection with the values above, without saving.");
   const more = el("details", {}, el("summary", {}, "Details"), el("pre"));
   more.hidden = true;
@@ -162,7 +161,7 @@ function probeBar(kind, get, choices, block) {
   const run = async () => {
     button.disabled = true; result.className = "result"; result.textContent = "testing…"; more.hidden = true;
     try {
-      const r = await api(`/api/probe/${kind}`, get());
+      const r = await api(path, get());
       result.className = "result " + (r.ok ? "ok" : "err");
       result.textContent = r.message;
       if (r.details.length) { more.querySelector("pre").textContent = r.details.join("\n"); more.hidden = false; }
@@ -179,21 +178,21 @@ function probeBar(kind, get, choices, block) {
     queueMicrotask(run);
   }
   const bar = el("div", { class: "probe" }, button, result, more);
-  if (kind === "mcp") bar.insertBefore(authorizeButton(get, result, run, block), result);
+  if (authorize) bar.insertBefore(authorizeButton(authorize, get, result, run, block), result);
   return bar;
 }
 
-// Shown only for servers with OAuth on. The tab is opened before the request so popup blockers allow it.
-function authorizeButton(get, result, run, block) {
+// Shown only while authorize.field is on. The tab is opened before the request so popup blockers allow it.
+function authorizeButton(authorize, get, result, run, block) {
   const button = el("button", { type: "button" }, "Authorize");
-  const sync = () => { button.hidden = !get().oauth; };
+  const sync = () => { button.hidden = !get()[authorize.field]; };
   block.addEventListener("change", sync);
   queueMicrotask(sync);
   button.addEventListener("click", async () => {
     const tab = window.open("about:blank", "_blank");
     button.disabled = true; result.className = "result"; result.textContent = "starting login…";
     try {
-      const r = await api("/api/oauth/authorize", get());
+      const r = await api(authorize.path, get());
       if (r.url) {
         tab.location = r.url;
         result.textContent = "Finish the login in the opened tab, then press Test.";
@@ -253,20 +252,13 @@ function listEditor(s, value, key) {
 const badges = new Set();
 let lastStatus = null;
 
-// ✓ works, ✗ failed (reason on hover), … not applied yet or still connecting.
+const MARKS = { ok: ["✓", "ok"], pending: ["…", "warn"], error: ["✗", "err"] };
+
+// ✓ works, ✗ failed (reason on hover), … connecting or not applied yet.
 function itemState(key, name) {
-  if (!lastStatus || !name) return ["…", "hint", "not saved yet"];
-  if (key === "mcp_servers") {
-    if (lastStatus.mcp_servers.includes(name)) return ["✓", "ok", "connected"];
-    if (name in lastStatus.mcp_failed) return ["✗", "err", lastStatus.mcp_failed[name]];
-  }
-  if (key === "devices") {
-    const d = lastStatus.devices.find(d => d.name === name);
-    if (d?.state === "connected") return ["✓", "ok", `connected${d.device ? " to " + d.device : ""}`];
-    if (d?.state === "connecting") return ["…", "warn", "connecting"];
-    if (d) return ["✗", "err", d.state];
-  }
-  return ["…", "hint", "not saved yet"];
+  const item = lastStatus?.items[key]?.[name];
+  if (!item) return ["…", "hint", "not saved yet"];
+  return [...MARKS[item.state], item.detail || item.state];
 }
 
 function paintBadge(entry) {
@@ -287,7 +279,7 @@ function buildForm(values) {
     const desc = prop.description;
     const body = resolve(prop).type === "object" || resolve(prop).type === "array"
       ? ed.node : el("div", { class: "field" }, el("label", {}, k), ed.node);
-    form.append(el("section", { class: "card" }, el("h2", {}, TITLES[k] || k), desc ? el("p", { class: "hint" }, desc) : null, body));
+    form.append(el("section", { class: "card" }, el("h2", {}, prop.title || k), desc ? el("p", { class: "hint" }, desc) : null, body));
   }
   return () => collect(getters);
 }
