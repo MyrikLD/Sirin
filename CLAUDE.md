@@ -63,9 +63,10 @@ Request flow for one utterance:
 - Wraps pydantic-ai `run_stream_events`, yielding only text. It emits `"\n"` at each `TextPart` end so text
   said before a tool call is spoken while the tool runs.
 - History is kept in memory per `conversation_id` with a TTL. Satellites that send no id use `device:<name>`.
-- Each MCP server connection is held open in its own task (`_hold`), because a failed anyio transport leaks its
-  cancel scope into the caller. `isolation.run_isolated` applies the same workaround for one-shot MCP calls.
-  Keep MCP connects out of the caller's task.
+- `build_toolset()` returns an `IsolatedToolset` (`isolation.py`): the MCP connection is opened and held in a task
+  of its own, because a failed anyio transport leaks its cancel scope into the task that opened it. Entering is
+  re-entrant (the agent holds each toolset open; every agent run enters it again without reconnecting). Open MCP
+  servers only through `build_toolset()` / `list_server_tools()`.
 - Tools are prefixed `<server>_`. A server that fails to connect is skipped and reported in
   `tool_status`, not raised.
 

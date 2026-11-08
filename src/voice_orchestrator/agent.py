@@ -26,7 +26,7 @@ from pydantic_ai.providers.openai_compatible import OpenAICompatibleProvider
 from pydantic_ai.toolsets import AbstractToolset
 
 from voice_orchestrator.config import LLMConfig, McpServerConfig
-from voice_orchestrator.isolation import run_isolated
+from voice_orchestrator.isolation import IsolatedToolset
 from voice_orchestrator.oauth import OAuthManager, OAuthRequired
 from voice_orchestrator.prompt import compile_prompt
 from voice_orchestrator.status import ItemStatus
@@ -54,8 +54,7 @@ class Agent:
         self._oauth = oauth
         self._mcp_servers = mcp_servers
         self._history: dict[str, tuple[float, list[ModelMessage]]] = {}
-        self._closing = asyncio.Event()
-        self._holders: list[asyncio.Task[None]] = []
+        self._connected: list[IsolatedToolset] = []
         self._agent: PydanticAgent[None, str] | None = None
         self.tool_status: dict[str, ItemStatus] = {}
 
@@ -76,14 +75,18 @@ class Agent:
             model_settings=ModelSettings(temperature=self._cfg.temperature, timeout=LLM_TIMEOUT_S),
         )
 
-    async def _connect(self, server: McpServerConfig) -> MCPToolset[None] | None:
-        """The connected toolset, or None; either way tool_status says what happened."""
-        ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+    async def _connect(self, server: McpServerConfig) -> IsolatedToolset | None:
+        """The connected toolset, held open until close(), or None; either way tool_status says what happened."""
         self._set_status(server.name, ItemStatus(state="pending", detail="connecting"))
+
+        def lost(exc: Exception) -> None:
+            _log.error("MCP server %s connection lost: %s", server.name, exc)
+            self._set_status(server.name, ItemStatus(state="error", detail=f"connection lost: {exc}"))
+
         try:
-            toolset = build_toolset(server, self._oauth)
-            self._holders.append(asyncio.create_task(self._hold(server.name, toolset, ready)))
-            count = await ready
+            toolset = await build_toolset(server, self._oauth, on_lost=lost).__aenter__()
+            self._connected.append(toolset)
+            count = len(await toolset.list_tools())
         except Exception as exc:  # noqa: BLE001
             reason = await explain_connect_error(server, exc)
             _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, reason)
@@ -102,8 +105,7 @@ class Agent:
         return self._prompt.render()
 
     async def close(self) -> None:
-        self._closing.set()
-        await asyncio.gather(*self._holders, return_exceptions=True)
+        await asyncio.gather(*(toolset.__aexit__(None, None, None) for toolset in self._connected))
 
     async def stream_reply(self, conversation_id: str, text: str) -> AsyncIterator[str]:
         if self._agent is None:
@@ -136,20 +138,6 @@ class Agent:
         self._history = {k: v for k, v in self._history.items() if now - v[0] < self._cfg.conversation_ttl_s}
         return self._history.get(conversation_id, (now, []))[1]
 
-    async def _hold(self, name: str, toolset: MCPToolset[None], ready: "asyncio.Future[int]") -> None:
-        # Each MCP connection lives in its own task: a failed anyio transport otherwise leaks
-        # its cancel scope into the caller and silently cancels it.
-        try:
-            async with toolset:
-                ready.set_result(len(await toolset.list_tools()))
-                await self._closing.wait()
-        except Exception as exc:  # noqa: BLE001
-            if not ready.done():
-                ready.set_exception(exc)
-            else:
-                _log.exception("MCP server %s connection lost", name)
-                self._set_status(name, ItemStatus(state="error", detail=f"connection lost: {exc}"))
-
 
 async def explain_connect_error(server: McpServerConfig, exc: Exception) -> str:
     """Turns an opaque MCP connection error into one the settings page can act on.
@@ -173,21 +161,21 @@ async def explain_connect_error(server: McpServerConfig, exc: Exception) -> str:
 
 
 def build_toolset(
-    server: McpServerConfig, oauth: OAuthManager, auth: OAuthClientProvider | None = None
-) -> MCPToolset[None]:
+    server: McpServerConfig,
+    oauth: OAuthManager,
+    auth: OAuthClientProvider | None = None,
+    on_lost: Callable[[Exception], None] | None = None,
+) -> IsolatedToolset:
     """auth overrides the stored-token OAuth provider, for the login flow itself."""
     if server.oauth and auth is None:
         auth = oauth.provider(server)
-    return MCPToolset(server.url, id=server.name, headers=server.headers or None, auth=auth)
+    mcp = MCPToolset(server.url, id=server.name, headers=server.headers or None, auth=auth)
+    return IsolatedToolset(mcp, on_lost)
 
 
 async def list_server_tools(
     server: McpServerConfig, oauth: OAuthManager, auth: OAuthClientProvider | None = None
 ) -> list[Tool]:
-    """Connects once and lists the server's tools, outside the caller's task (see run_isolated)."""
-
-    async def connect() -> list[Tool]:
-        async with build_toolset(server, oauth, auth) as toolset:
-            return await toolset.list_tools()
-
-    return await run_isolated(connect())
+    """Connects once and lists the server's tools."""
+    async with build_toolset(server, oauth, auth) as toolset:
+        return await toolset.list_tools()
