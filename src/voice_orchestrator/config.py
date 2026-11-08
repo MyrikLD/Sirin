@@ -1,10 +1,10 @@
-import os
 from pathlib import Path
 
 from jinja2 import TemplateSyntaxError
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from voice_orchestrator.files import write_private
 from voice_orchestrator.prompt import compile_prompt
 
 # Marks a field the settings page shows as a dropdown filled from the block's probe.
@@ -18,7 +18,7 @@ class AppSettings(BaseSettings):
 
     host: str = Field(default="0.0.0.0", description="Bind address of the HTTP server")
     port: int = Field(default=8765, description="Bind port of the HTTP server")
-    public_url: str | None = Field(
+    public_url: AnyHttpUrl | None = Field(
         default=None,
         description="Base URL satellites download answers from; by default this host's address on the "
         "route to each satellite. Set it only behind a proxy or NAT.",
@@ -120,7 +120,4 @@ class SettingsStore:
         return RuntimeSettings.model_validate_json(self._path.read_text())
 
     def save(self, settings: RuntimeSettings) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(settings.model_dump_json(indent=2))
-        os.replace(tmp, self._path)
+        write_private(self._path, settings.model_dump_json(indent=2))

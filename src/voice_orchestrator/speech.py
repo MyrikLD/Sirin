@@ -131,7 +131,7 @@ class TextToSpeech:
             event = await _read(client, "TTS")
             if AudioStart.is_type(event.type):
                 start = AudioStart.from_event(event)
-                await clip.set_format(start.rate, start.width, start.channels)
+                clip.set_format(start.rate, start.width, start.channels)
             elif AudioChunk.is_type(event.type):
                 await clip.write(AudioChunk.from_event(event).audio)
             if until.is_type(event.type):

@@ -1,8 +1,8 @@
+import ipaddress
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -19,27 +19,36 @@ _log = logging.getLogger(__name__)
 
 
 def _check_public_url(app_settings: AppSettings) -> None:
-    if app_settings.public_url is None:
+    url = app_settings.public_url
+    if url is None:
         return
-    url = urlparse(app_settings.public_url)
-    port = url.port or {"http": 80, "https": 443}.get(url.scheme)
-    if port != app_settings.port:
+    if url.host == "localhost" or _is_loopback_ip(url.host or ""):
+        _log.warning("VO_PUBLIC_URL %s is a loopback address: satellites cannot download answers from it", url)
+    if url.port != app_settings.port:
         _log.warning(
-            "VO_PUBLIC_URL %s points to port %s, but the server listens on %s: the satellite reaches it "
+            "VO_PUBLIC_URL %s points to port %s, but the server listens on %s: satellites reach it "
             "only through a proxy on that port",
-            app_settings.public_url,
-            port,
+            url,
+            url.port,
             app_settings.port,
         )
 
 
+def _is_loopback_ip(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 def create_app(app_settings: AppSettings) -> FastAPI:
-    clips = ClipStore(app_settings.public_url, app_settings.port, app_settings.audio_ttl_s)
+    public_url = str(app_settings.public_url) if app_settings.public_url else None
+    clips = ClipStore(public_url, app_settings.port, app_settings.audio_ttl_s)
     store = SettingsStore(app_settings.data_dir)
 
     async def on_authorized(server_name: str) -> None:
         if any(m.name == server_name for m in runtime.settings.mcp_servers):
-            await runtime.apply(runtime.settings)
+            await runtime.reconnect_tools()
 
     oauth_manager = OAuthManager(app_settings.data_dir, on_authorized)
     runtime = Runtime(clips, oauth_manager)

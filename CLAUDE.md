@@ -18,7 +18,12 @@ pip install -e .              # install (src layout, hatchling)
 voice-orchestrator -v         # run; -v enables DEBUG and protocol event logs
 python -m voice_orchestrator  # same entry point
 ruff check src && ruff format src   # lint/format (line-length 120)
+docker compose up -d --build  # container; host networking, settings in ./data
 ```
+
+CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff and an import check, then builds the image for
+amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. The image is pinned to Python 3.12 because
+`pymicro-vad` has wheels only for that version.
 
 There is no test suite. The settings page at `http://<host>:8765/` stores config in `data/settings.json`
 (git-ignored); process-level config comes from `VO_*` env vars or `.env` (`AppSettings`).
@@ -28,8 +33,13 @@ There is no test suite. The settings page at `http://<host>:8765/` stores config
 Two config layers in `config.py`:
 - `AppSettings` (env, read once at start): bind address, `public_url`, clip TTL, `data_dir`.
 - `RuntimeSettings` (edited on the web page, persisted by `SettingsStore`): devices, STT, TTS, VAD, LLM, MCP servers.
-  `PUT /api/settings` saves it and calls `Runtime.apply()`, which tears down and rebuilds every component under a
-  lock: no restart is needed, and no component outlives a settings change.
+  `PUT /api/settings` saves it and calls `Runtime.apply()`, which under a lock rebuilds only what changed, with no
+  restart needed:
+  - the `Agent` (and its MCP connections) when `llm` or `mcp_servers` changed;
+  - `SpeechToText` / `TextToSpeech` when their block changed;
+  - a `Satellite` when its own `DeviceConfig` changed. Unchanged satellites keep their connection and any dialog in
+    progress and only receive the new `Services`.
+  `Runtime.reconnect_tools()` rebuilds just the agent (used after an OAuth login).
 
 Object graph built by `Runtime.apply()` (`runtime.py`): one `Agent` + `SpeechToText` + `TextToSpeech` +
 the shared `ClipStore` are bundled into `Services` (`pipeline.py`), and one `Satellite` per device receives them.
@@ -76,5 +86,5 @@ Settings page (`static/index.html`) is a single vanilla-JS file that renders for
 
 OAuth for HTTP MCP servers (`oauth.py`): `OAuthManager` runs the login flow from the settings page (redirect back
 to `/oauth/callback` on the origin the page was opened from), stores tokens per server in `data/oauth/`, and on
-success calls `on_authorized`, which re-applies runtime settings. During normal runs the provider refuses to start
-an interactive login and raises `OAuthRequired` instead.
+success calls `on_authorized`, which reconnects the MCP servers (`Runtime.reconnect_tools()`). During normal runs
+the provider refuses to start an interactive login and raises `OAuthRequired` instead.

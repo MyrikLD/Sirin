@@ -28,33 +28,69 @@ class Status(BaseModel):
 
 
 class Runtime:
-    """Owns the components built from RuntimeSettings and rebuilds them when the settings change."""
+    """Owns the components built from RuntimeSettings and rebuilds only those whose settings changed.
+
+    A device whose own settings are unchanged keeps its connection and any dialog in progress, so
+    tuning VAD or the voice does not drop the satellites or reconnect every MCP server.
+    """
 
     def __init__(self, clips: ClipStore, oauth: OAuthManager) -> None:
         self._clips = clips
         self._oauth = oauth
         self._lock = asyncio.Lock()
-        self._agent: Agent | None = None
+        self._services: Services | None = None
         self._satellites: list[Satellite] = []
         self.settings = RuntimeSettings()
 
     async def apply(self, settings: RuntimeSettings) -> None:
         async with self._lock:
-            await self._stop()
+            await self._apply(settings, reconnect_tools=False)
+
+    async def reconnect_tools(self) -> None:
+        """Rebuilds the agent with the current settings, e.g. after an MCP server was authorized."""
+        async with self._lock:
+            await self._apply(self.settings, reconnect_tools=True)
+
+    async def _apply(self, settings: RuntimeSettings, reconnect_tools: bool) -> None:
+        old, previous = self._services, self.settings
+        new_agent = (
+            old is None
+            or reconnect_tools
+            or settings.llm != previous.llm
+            or settings.mcp_servers != previous.mcp_servers
+        )
+        if new_agent:
             agent = Agent(settings.llm, settings.mcp_servers, self._oauth)
             await agent.start()
-            services = Services(
-                stt=SpeechToText(settings.stt),
-                tts=TextToSpeech(settings.tts),
-                agent=agent,
-                clips=self._clips,
-                vad=settings.vad,
-            )
-            satellites = [Satellite(device, services) for device in settings.devices]
-            for satellite in satellites:
+        else:
+            agent = old.agent
+        services = Services(
+            stt=old.stt if old and settings.stt == previous.stt else SpeechToText(settings.stt),
+            tts=old.tts if old and settings.tts == previous.tts else TextToSpeech(settings.tts),
+            agent=agent,
+            clips=self._clips,
+            vad=settings.vad,
+        )
+
+        running = {s.cfg.name: s for s in self._satellites}
+        satellites = []
+        for device in settings.devices:
+            satellite = running.pop(device.name, None)
+            if satellite is not None and satellite.cfg == device:
+                satellite.services = services
+            else:
+                if satellite is not None:
+                    await satellite.stop()
+                satellite = Satellite(device, services)
                 await satellite.start()
-            self._agent, self._satellites, self.settings = agent, satellites, settings
-            _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_servers))
+            satellites.append(satellite)
+        for removed in running.values():
+            await removed.stop()
+
+        if new_agent and old is not None:
+            await old.agent.close()
+        self._services, self._satellites, self.settings = services, satellites, settings
+        _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_servers))
 
     async def stop(self) -> None:
         async with self._lock:
@@ -66,13 +102,13 @@ class Runtime:
                 DeviceStatus(name=s.cfg.name, host=s.cfg.host, state=s.state, device=s.device_name)
                 for s in self._satellites
             ],
-            mcp_servers=self._agent.tool_servers if self._agent else [],
-            mcp_failed=self._agent.tool_failures if self._agent else {},
+            mcp_servers=self._services.agent.tool_servers if self._services else [],
+            mcp_failed=self._services.agent.tool_failures if self._services else {},
         )
 
     async def _stop(self) -> None:
         for satellite in self._satellites:
             await satellite.stop()
-        if self._agent is not None:
-            await self._agent.close()
-        self._agent, self._satellites = None, []
+        if self._services is not None:
+            await self._services.agent.close()
+        self._services, self._satellites = None, []

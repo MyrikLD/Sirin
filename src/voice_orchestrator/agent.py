@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 
 import httpx2
 from mcp.client.auth import OAuthClientProvider
+from mcp.types import Tool
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
     AgentRunResultEvent,
@@ -25,6 +26,7 @@ from pydantic_ai.providers.openai_compatible import OpenAICompatibleProvider
 from pydantic_ai.toolsets import AbstractToolset
 
 from voice_orchestrator.config import LLMConfig, McpServerConfig
+from voice_orchestrator.isolation import run_isolated
 from voice_orchestrator.oauth import OAuthManager, OAuthRequired
 from voice_orchestrator.prompt import compile_prompt
 
@@ -38,14 +40,11 @@ LLM_TIMEOUT_S = 60
 class Agent:
     """LLM with MCP tools; streams the spoken part of the answer as text deltas."""
 
-    def __init__(
-        self, cfg: LLMConfig, mcp_servers: list[McpServerConfig], oauth: OAuthManager
-    ) -> None:
+    def __init__(self, cfg: LLMConfig, mcp_servers: list[McpServerConfig], oauth: OAuthManager) -> None:
         self._cfg = cfg
         self._prompt = compile_prompt(cfg.system_prompt)
         self._oauth = oauth
         self._mcp_servers = mcp_servers
-        self._ttl = cfg.conversation_ttl_s
         self._history: dict[str, tuple[float, list[ModelMessage]]] = {}
         self._closing = asyncio.Event()
         self._holders: list[asyncio.Task[None]] = []
@@ -54,21 +53,16 @@ class Agent:
         self.tool_failures: dict[str, str] = {}
 
     async def start(self) -> None:
+        # All servers connect at once, so startup waits for the slowest one rather than their sum.
+        results = await asyncio.gather(*(self._connect(server) for server in self._mcp_servers))
         toolsets: list[AbstractToolset[None]] = []
-        for server in self._mcp_servers:
-            ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-            try:
-                toolset = build_toolset(server, self._oauth)
-                self._holders.append(asyncio.create_task(self._hold(server.name, toolset, ready)))
-                count = await ready
-            except Exception as exc:  # noqa: BLE001
-                reason = await explain_connect_error(server, exc)
-                _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, reason)
-                self.tool_failures[server.name] = reason
-                continue
-            _log.info("MCP server %s: %d tools", server.name, count)
-            toolsets.append(toolset.prefixed(server.name))
-            self.tool_servers.append(server.name)
+        for server, result in zip(self._mcp_servers, results, strict=True):
+            if isinstance(result, str):
+                _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, result)
+                self.tool_failures[server.name] = result
+            else:
+                toolsets.append(result.prefixed(server.name))
+                self.tool_servers.append(server.name)
 
         provider = OpenAICompatibleProvider("local", base_url=self._cfg.base_url, api_key=self._cfg.api_key or "none")
         self._agent = PydanticAgent(
@@ -77,6 +71,17 @@ class Agent:
             toolsets=toolsets,
             model_settings=ModelSettings(temperature=self._cfg.temperature, timeout=LLM_TIMEOUT_S),
         )
+
+    async def _connect(self, server: McpServerConfig) -> MCPToolset[None] | str:
+        """The connected toolset, or why it could not connect."""
+        ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        try:
+            toolset = build_toolset(server, self._oauth)
+            self._holders.append(asyncio.create_task(self._hold(server.name, toolset, ready)))
+            _log.info("MCP server %s: %d tools", server.name, await ready)
+            return toolset
+        except Exception as exc:  # noqa: BLE001
+            return await explain_connect_error(server, exc)
 
     def _render_prompt(self) -> str:
         return self._prompt.render()
@@ -113,7 +118,7 @@ class Agent:
 
     def _messages(self, conversation_id: str) -> list[ModelMessage]:
         now = time.monotonic()
-        self._history = {k: v for k, v in self._history.items() if now - v[0] < self._ttl}
+        self._history = {k: v for k, v in self._history.items() if now - v[0] < self._cfg.conversation_ttl_s}
         return self._history.get(conversation_id, (now, []))[1]
 
     async def _hold(self, name: str, toolset: MCPToolset[None], ready: "asyncio.Future[int]") -> None:
@@ -158,3 +163,15 @@ def build_toolset(
     if server.oauth and auth is None:
         auth = oauth.provider(server)
     return MCPToolset(server.url, id=server.name, headers=server.headers or None, auth=auth)
+
+
+async def list_server_tools(
+    server: McpServerConfig, oauth: OAuthManager, auth: OAuthClientProvider | None = None
+) -> list[Tool]:
+    """Connects once and lists the server's tools, outside the caller's task (see run_isolated)."""
+
+    async def connect() -> list[Tool]:
+        async with build_toolset(server, oauth, auth) as toolset:
+            return await toolset.list_tools()
+
+    return await run_isolated(connect())

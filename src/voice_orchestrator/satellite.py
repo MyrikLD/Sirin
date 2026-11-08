@@ -5,6 +5,8 @@ from collections.abc import Callable
 
 from aioesphomeapi import (
     APIClient,
+    APIVersion,
+    DeviceInfo,
     ReconnectLogic,
     VoiceAssistantAudioSettings,
     VoiceAssistantFeature,
@@ -16,6 +18,20 @@ from voice_orchestrator.pipeline import PipelineRun, Services
 _log = logging.getLogger(__name__)
 
 
+def device_client(cfg: DeviceConfig, client_info: str) -> APIClient:
+    return APIClient(cfg.host, cfg.port, None, noise_psk=cfg.noise_psk, client_info=client_info)
+
+
+def voice_support_problem(info: DeviceInfo, api_version: APIVersion | None) -> str | None:
+    """Why this device cannot serve as a satellite, or None if it can."""
+    features = info.voice_assistant_feature_flags_compat(api_version) if api_version else 0
+    if not features & VoiceAssistantFeature.VOICE_ASSISTANT:
+        return "the device has no voice_assistant component"
+    if not features & VoiceAssistantFeature.API_AUDIO:
+        return "the firmware is too old: no audio over the API"
+    return None
+
+
 class Satellite:
     """Holds the API connection to one ESPHome satellite and runs its pipelines."""
 
@@ -24,10 +40,8 @@ class Satellite:
         self.state = "connecting"
         self.device_name: str | None = None
         self.audio_base_url: str | None = None
-        self._services = services
-        self._client = APIClient(
-            cfg.host, cfg.port, None, noise_psk=cfg.noise_psk, client_info="voice-orchestrator"
-        )
+        self.services = services
+        self._client = device_client(cfg, "voice-orchestrator")
         self._reconnect = ReconnectLogic(
             client=self._client,
             on_connect=self._on_connect,
@@ -49,18 +63,10 @@ class Satellite:
 
     async def _on_connect(self) -> None:
         info = await self._client.device_info()
-        api_version = self._client.api_version
-        if api_version is None:
-            raise ConnectionError("API version unknown after connect")
         self.device_name = info.friendly_name or info.name
-        features = info.voice_assistant_feature_flags_compat(api_version)
-        if not features & VoiceAssistantFeature.VOICE_ASSISTANT:
-            self.state = "no voice_assistant component"
-            _log.error("[%s] %s has no voice_assistant component", self.cfg.name, info.name)
-            return
-        if not features & VoiceAssistantFeature.API_AUDIO:
-            self.state = "firmware too old: no audio over the API"
-            _log.error("[%s] firmware is too old: no audio over the API", self.cfg.name)
+        if problem := voice_support_problem(info, self._client.api_version):
+            self.state = problem
+            _log.error("[%s] %s: %s", self.cfg.name, info.name, problem)
             return
 
         self._unsubscribe = self._client.subscribe_voice_assistant(
@@ -68,7 +74,7 @@ class Satellite:
             handle_stop=self._handle_stop,
             handle_audio=self._handle_audio,
         )
-        self.audio_base_url = await self._services.clips.base_url_for(self.cfg.host)
+        self.audio_base_url = await self.services.clips.base_url_for(self.cfg.host)
         self.state = "connected"
         _log.info("[%s] answers are served from %s", self.cfg.name, self.audio_base_url)
         _log.info("[%s] connected to %s (ESPHome %s)", self.cfg.name, info.name, info.esphome_version)
@@ -85,8 +91,8 @@ class Satellite:
     async def _handle_start(
         self,
         conversation_id: str,
-        flags: int,  # noqa: ARG002
-        audio_settings: VoiceAssistantAudioSettings,  # noqa: ARG002
+        flags: int,
+        audio_settings: VoiceAssistantAudioSettings,
         wake_word_phrase: str | None,
     ) -> int | None:
         await self._cancel_run()
@@ -96,13 +102,13 @@ class Satellite:
         # Firmware that does not echo the conversation id back (pulsar) would start every dialog from
         # scratch; keying by device keeps the history until conversation_ttl_s of silence, as ESPHome does.
         conversation = conversation_id or f"device:{self.cfg.name}"
-        run = PipelineRun(self._client, self._services, conversation, self.cfg.name, self.audio_base_url)
+        run = PipelineRun(self._client, self.services, conversation, self.cfg.name, self.audio_base_url)
         self._run = run
         self._task = asyncio.create_task(run.run())
         # Port 0 tells the device to stream audio over the API connection instead of UDP.
         return 0
 
-    async def _handle_audio(self, data: bytes, data2: bytes | None) -> None:  # noqa: ARG002
+    async def _handle_audio(self, data: bytes, data2: bytes | None) -> None:
         if self._run is not None:
             self._run.feed(data)
 

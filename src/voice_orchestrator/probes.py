@@ -1,14 +1,15 @@
 import asyncio
+import functools
 from collections.abc import Awaitable, Callable
 
-from aioesphomeapi import APIClient, VoiceAssistantFeature
+from aioesphomeapi import VoiceAssistantFeature
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
-from voice_orchestrator.agent import build_toolset, explain_connect_error
+from voice_orchestrator.agent import explain_connect_error, list_server_tools
 from voice_orchestrator.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
-from voice_orchestrator.isolation import run_isolated
 from voice_orchestrator.oauth import OAuthManager
+from voice_orchestrator.satellite import device_client, voice_support_problem
 from voice_orchestrator.speech import describe
 
 PROBE_TIMEOUT_S = 10.0
@@ -23,36 +24,23 @@ class ProbeResult(BaseModel):
     )
 
 
+def _guard[**P](probe: Callable[P, Awaitable[ProbeResult]]) -> Callable[P, Awaitable[ProbeResult]]:
+    """Turns a timeout or any error into a failed ProbeResult, so the page always gets an answer."""
+
+    @functools.wraps(probe)
+    async def guarded(*args: P.args, **kwargs: P.kwargs) -> ProbeResult:
+        try:
+            return await asyncio.wait_for(probe(*args, **kwargs), PROBE_TIMEOUT_S)
+        except TimeoutError:
+            return ProbeResult(ok=False, message=f"No answer within {PROBE_TIMEOUT_S:.0f} s")
+        except Exception as exc:  # noqa: BLE001
+            return ProbeResult(ok=False, message=f"{type(exc).__name__}: {exc}")
+
+    return guarded
+
+
+@_guard
 async def probe_stt(cfg: SttConfig) -> ProbeResult:
-    return await _guard(lambda: _probe_stt(cfg))
-
-
-async def probe_tts(cfg: TtsConfig) -> ProbeResult:
-    return await _guard(lambda: _probe_tts(cfg))
-
-
-async def probe_llm(cfg: LLMConfig) -> ProbeResult:
-    return await _guard(lambda: _probe_llm(cfg))
-
-
-async def probe_mcp(cfg: McpServerConfig, oauth: OAuthManager) -> ProbeResult:
-    return await _guard(lambda: run_isolated(_probe_mcp(cfg, oauth)))
-
-
-async def probe_device(cfg: DeviceConfig) -> ProbeResult:
-    return await _guard(lambda: _probe_device(cfg))
-
-
-async def _guard(probe: Callable[[], Awaitable[ProbeResult]]) -> ProbeResult:
-    try:
-        return await asyncio.wait_for(probe(), PROBE_TIMEOUT_S)
-    except TimeoutError:
-        return ProbeResult(ok=False, message=f"No answer within {PROBE_TIMEOUT_S:.0f} s")
-    except Exception as exc:  # noqa: BLE001
-        return ProbeResult(ok=False, message=f"{type(exc).__name__}: {exc}")
-
-
-async def _probe_stt(cfg: SttConfig) -> ProbeResult:
     info = await describe(cfg.host, cfg.port)
     if not info.asr:
         return ProbeResult(ok=False, message="The server has no speech recognition")
@@ -72,7 +60,8 @@ async def _probe_stt(cfg: SttConfig) -> ProbeResult:
     )
 
 
-async def _probe_tts(cfg: TtsConfig) -> ProbeResult:
+@_guard
+async def probe_tts(cfg: TtsConfig) -> ProbeResult:
     info = await describe(cfg.host, cfg.port)
     if not info.tts:
         return ProbeResult(ok=False, message="The server has no speech synthesis")
@@ -90,45 +79,41 @@ async def _probe_tts(cfg: TtsConfig) -> ProbeResult:
     )
 
 
-async def _probe_llm(cfg: LLMConfig) -> ProbeResult:
+@_guard
+async def probe_llm(cfg: LLMConfig) -> ProbeResult:
     client = AsyncOpenAI(base_url=cfg.base_url, api_key=cfg.api_key or "none", timeout=PROBE_TIMEOUT_S, max_retries=0)
     async with client:
         ids = sorted([model.id async for model in client.models.list()])
-    if cfg.model and cfg.model not in ids:
-        message = f"Server is up, but model {cfg.model!r} is not in its list"
-        return ProbeResult(ok=False, message=message, details=ids, options={"model": ids})
-    return ProbeResult(ok=True, message=f"{len(ids)} model(s)", details=ids, options={"model": ids})
+    ok = not cfg.model or cfg.model in ids
+    message = f"{len(ids)} model(s)" if ok else f"Server is up, but model {cfg.model!r} is not in its list"
+    return ProbeResult(ok=ok, message=message, details=ids, options={"model": ids})
 
 
-async def _probe_mcp(cfg: McpServerConfig, oauth: OAuthManager) -> ProbeResult:
+@_guard
+async def probe_mcp(cfg: McpServerConfig, oauth: OAuthManager) -> ProbeResult:
     try:
-        toolset = build_toolset(cfg, oauth)
-        async with toolset:
-            tools = await toolset.list_tools()
+        tools = await list_server_tools(cfg, oauth)
     except Exception as exc:  # noqa: BLE001
         return ProbeResult(ok=False, message=await explain_connect_error(cfg, exc))
-    details = [f"{cfg.name}_{t.name}: {(t.description or '').splitlines()[0] if t.description else ''}" for t in tools]
+    details = [f"{cfg.name}_{t.name}: {(t.description or '').partition('\n')[0]}" for t in tools]
     return ProbeResult(ok=True, message=f"{len(tools)} tool(s)", details=details)
 
 
-async def _probe_device(cfg: DeviceConfig) -> ProbeResult:
-    client = APIClient(cfg.host, cfg.port, None, noise_psk=cfg.noise_psk, client_info="voice-orchestrator-probe")
+@_guard
+async def probe_device(cfg: DeviceConfig) -> ProbeResult:
+    client = device_client(cfg, "voice-orchestrator-probe")
     try:
         await client.connect(login=True)
         info = await client.device_info()
-        api_version = client.api_version
-        features = info.voice_assistant_feature_flags_compat(api_version) if api_version else 0
+        features = info.voice_assistant_feature_flags_compat(client.api_version) if client.api_version else 0
         details = [
             f"name: {info.friendly_name or info.name}",
             f"model: {info.manufacturer} {info.model}".strip(),
             f"ESPHome: {info.esphome_version}",
             "features: " + (", ".join(f.name.lower() for f in VoiceAssistantFeature if features & f) or "none"),
         ]
-        if not features & VoiceAssistantFeature.VOICE_ASSISTANT:
-            return ProbeResult(ok=False, message="Connected, but the device has no voice_assistant", details=details)
-        if not features & VoiceAssistantFeature.API_AUDIO:
-            message = "Connected, but the firmware cannot send audio over the API"
-            return ProbeResult(ok=False, message=message, details=details)
+        if problem := voice_support_problem(info, client.api_version):
+            return ProbeResult(ok=False, message=f"Connected, but {problem}", details=details)
         wake = await client.get_voice_assistant_configuration(timeout=5)
         if wake.available_wake_words:
             names = ", ".join(w.wake_word for w in wake.available_wake_words)

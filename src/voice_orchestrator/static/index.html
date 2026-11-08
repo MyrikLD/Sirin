@@ -28,9 +28,8 @@
   .field > label { font-family: ui-monospace, monospace; font-size: 13px; padding-top: 6px; overflow-wrap: anywhere; }
   .field > .hint { grid-column: 2; margin: 0; }
   @media (max-width: 600px) { .field { grid-template-columns: 1fr; } .field > .hint { grid-column: 1; } }
-  input, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--input); color: var(--text); font: inherit; }
+  input, textarea, select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--input); color: var(--text); font: inherit; }
   input[type=checkbox] { width: auto; justify-self: start; margin: 8px 0 0; }
-  select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--input); color: var(--text); font: inherit; }
   textarea { min-height: 72px; resize: vertical; }
   textarea.long { min-height: 216px; }
   .item { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; }
@@ -149,7 +148,7 @@ function objectEditor(s, value) {
     const desc = resolve(prop).description;
     node.append(el("div", { class: "field" }, el("label", {}, k + (required.has(k) ? " *" : "")), ed.node, desc ? el("p", { class: "hint" }, desc) : null));
   }
-  const get = () => Object.fromEntries(Object.entries(getters).map(([k, g]) => [k, g()]).filter(([, v]) => v !== undefined));
+  const get = () => collect(getters);
   if (PROBES[s.def]) node.append(probeBar(PROBES[s.def], get, choices, node));
   return { node, get };
 }
@@ -163,7 +162,7 @@ function probeBar(kind, get, choices, block) {
   const run = async () => {
     button.disabled = true; result.className = "result"; result.textContent = "testing…"; more.hidden = true;
     try {
-      const r = await api(`/api/probe/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(get()) });
+      const r = await api(`/api/probe/${kind}`, get());
       result.className = "result " + (r.ok ? "ok" : "err");
       result.textContent = r.message;
       if (r.details.length) { more.querySelector("pre").textContent = r.details.join("\n"); more.hidden = false; }
@@ -194,7 +193,7 @@ function authorizeButton(get, result, run, block) {
     const tab = window.open("about:blank", "_blank");
     button.disabled = true; result.className = "result"; result.textContent = "starting login…";
     try {
-      const r = await api("/api/oauth/authorize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(get()) });
+      const r = await api("/api/oauth/authorize", get());
       if (r.url) {
         tab.location = r.url;
         result.textContent = "Finish the login in the opened tab, then press Test.";
@@ -290,7 +289,7 @@ function buildForm(values) {
       ? ed.node : el("div", { class: "field" }, el("label", {}, k), ed.node);
     form.append(el("section", { class: "card" }, el("h2", {}, TITLES[k] || k), desc ? el("p", { class: "hint" }, desc) : null, body));
   }
-  return () => Object.fromEntries(Object.entries(getters).map(([k, g]) => [k, g()]).filter(([, v]) => v !== undefined));
+  return () => collect(getters);
 }
 
 // The page shows status only as badges on list items; this keeps them current.
@@ -299,14 +298,21 @@ function renderStatus(st) {
   badges.forEach(paintBadge);
 }
 
-async function api(path, opts) {
+// Values of the editors, without the ones left empty so the server applies its defaults.
+function collect(getters) {
+  return Object.fromEntries(Object.entries(getters).map(([k, g]) => [k, g()]).filter(([, v]) => v !== undefined));
+}
+
+// GET without a body; with one, sends it as JSON (POST unless told otherwise).
+async function api(path, body, method = "POST") {
+  const opts = body === undefined ? {} : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
   const r = await fetch(path, opts);
-  const body = await r.json().catch(() => null);
+  const answer = await r.json().catch(() => null);
   if (!r.ok) {
-    const detail = Array.isArray(body?.detail) ? body.detail.map(d => `${d.loc.slice(1).join(".") || "value"}: ${d.msg}`).join("\n") : body?.detail || r.statusText;
+    const detail = Array.isArray(answer?.detail) ? answer.detail.map(d => `${d.loc.slice(1).join(".") || "value"}: ${d.msg}`).join("\n") : answer?.detail || r.statusText;
     throw new Error(detail);
   }
-  return body;
+  return answer;
 }
 
 async function refreshStatus() { try { renderStatus(await api("/healthcheck")); } catch {} }
@@ -314,13 +320,13 @@ async function refreshStatus() { try { renderStatus(await api("/healthcheck")); 
 (async () => {
   schema = await api("/api/settings/schema");
   defs = schema.$defs || {};
-  const collect = buildForm(await api("/api/settings"));
+  const collectForm = buildForm(await api("/api/settings"));
   const msg = document.getElementById("msg");
   document.getElementById("save").addEventListener("click", async () => {
     if (!document.getElementById("form").reportValidity()) return;
     msg.className = ""; msg.textContent = "applying…";
     try {
-      renderStatus(await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(collect()) }));
+      renderStatus(await api("/api/settings", collectForm(), "PUT"));
       msg.className = "ok"; msg.textContent = "saved and applied";
     } catch (e) { msg.className = "err"; msg.textContent = e.message; }
   });

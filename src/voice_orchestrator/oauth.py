@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -10,6 +9,13 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx2
 from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.auth.utils import (
+    build_oauth_authorization_server_metadata_discovery_urls,
+    build_protected_resource_metadata_discovery_urls,
+    create_oauth_metadata_request,
+    handle_auth_metadata_response,
+    handle_protected_resource_response,
+)
 from mcp.shared.auth import (
     AuthorizationCodeResult,
     OAuthClientInformationFull,
@@ -20,7 +26,7 @@ from mcp.shared.auth import (
 from pydantic import AnyUrl
 
 from voice_orchestrator.config import McpServerConfig
-from voice_orchestrator.isolation import run_isolated
+from voice_orchestrator.files import write_private
 
 _log = logging.getLogger(__name__)
 
@@ -36,13 +42,13 @@ class OAuthRequired(RuntimeError):
 
 
 class FileTokenStorage(TokenStorage):
-    """Tokens and the registered client of one MCP server, in one JSON file."""
+    """Tokens, the registered client and the server metadata of one MCP server, in one JSON file."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
 
     async def get_tokens(self) -> OAuthToken | None:
-        data = self._read()
+        data = self.read()
         if "tokens" not in data:
             return None
         tokens = OAuthToken.model_validate(data["tokens"])
@@ -51,52 +57,46 @@ class FileTokenStorage(TokenStorage):
         return tokens
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        data = self._read()
+        data = self.read()
         data["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
         data["expires_at"] = time.time() + tokens.expires_in if tokens.expires_in is not None else None
         self._write(data)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        data = self._read()
+        data = self.read()
         return OAuthClientInformationFull.model_validate(data["client"]) if "client" in data else None
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        data = self._read()
+        data = self.read()
         data["client"] = client_info.model_dump(mode="json", exclude_none=True)
         self._write(data)
 
-    def has_tokens(self) -> bool:
-        return "tokens" in self._read()
+    async def server_metadata(self, server_url: str) -> OAuthMetadata | None:
+        """The stored authorization server metadata, discovered and stored on first use."""
+        data = self.read()
+        if "server_metadata" in data:
+            return OAuthMetadata.model_validate(data["server_metadata"])
+        metadata = await _discover_server_metadata(server_url)
+        if metadata is not None:
+            data["server_metadata"] = metadata.model_dump(mode="json", exclude_none=True)
+            self._write(data)
+        return metadata
 
-    def redirect_uris(self) -> list[str]:
-        return [str(u) for u in self._read().get("client", {}).get("redirect_uris", [])]
-
-    def client_id(self) -> str | None:
-        return self._read().get("client", {}).get("client_id")
+    def read(self) -> dict:
+        return json.loads(self._path.read_text()) if self._path.exists() else {}
 
     def reset(self) -> None:
         self._path.unlink(missing_ok=True)
 
-    def server_metadata(self) -> dict | None:
-        return self._read().get("server_metadata")
-
-    def set_server_metadata(self, metadata: dict) -> None:
-        data = self._read()
-        data["server_metadata"] = metadata
-        self._write(data)
-
-    def _read(self) -> dict:
-        return json.loads(self._path.read_text()) if self._path.exists() else {}
-
     def _write(self, data: dict) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.chmod(0o600)
-        os.replace(tmp, self._path)
+        write_private(self._path, json.dumps(data, indent=2))
 
 
 class _Provider(OAuthClientProvider):
+    def __init__(self, *, storage: FileTokenStorage, **kwargs) -> None:
+        super().__init__(storage=storage, **kwargs)
+        self._file_storage = storage
+
     async def _initialize(self) -> None:
         await super()._initialize()
         # The SDK treats loaded tokens as never expiring, so an expired one would get a 401 and a new
@@ -105,14 +105,8 @@ class _Provider(OAuthClientProvider):
             self.context.update_token_expiry(self.context.current_tokens)
         # After a restart the SDK knows no server metadata and refreshes at <origin>/token, which is
         # wrong for servers like Home Assistant (/auth/token); the refresh fails and asks for a login.
-        if self.context.oauth_metadata is None and isinstance(self.context.storage, FileTokenStorage):
-            metadata = self.context.storage.server_metadata()
-            if metadata is None:
-                metadata = await _authorization_server_metadata(self.context.server_url)
-                if metadata is not None:
-                    self.context.storage.set_server_metadata(metadata)
-            if metadata is not None:
-                self.context.oauth_metadata = OAuthMetadata.model_validate(metadata)
+        if self.context.oauth_metadata is None:
+            self.context.oauth_metadata = await self._file_storage.server_metadata(self.context.server_url)
 
 
 class _Flow:
@@ -137,7 +131,9 @@ class OAuthManager:
         self._tasks: set[asyncio.Task[None]] = set()
 
     def provider(self, server: McpServerConfig) -> OAuthClientProvider:
-        if not self.is_authorized(server):
+        data = self._storage(server).read()
+        redirect_uris = data.get("client", {}).get("redirect_uris")
+        if "tokens" not in data or not redirect_uris:
             raise OAuthRequired(server.name)
 
         async def refuse(_: str) -> None:
@@ -146,25 +142,23 @@ class OAuthManager:
         async def never() -> AuthorizationCodeResult:
             raise OAuthRequired(server.name)
 
-        redirect_uris = self._storage(server).redirect_uris()
-        if not redirect_uris:
-            raise OAuthRequired(server.name)
-        return self._provider(server, redirect_uris[0], refuse, never)
-
-    def is_authorized(self, server: McpServerConfig) -> bool:
-        return self._storage(server).has_tokens()
+        return self._provider(server, str(redirect_uris[0]), refuse, never)
 
     async def authorize(
         self,
         server: McpServerConfig,
         redirect_uri: str,
-        connect: Callable[[OAuthClientProvider], Awaitable[None]],
+        connect: Callable[[OAuthClientProvider], Awaitable[object]],
     ) -> str | None:
-        """Starts a login and returns the URL to open, or None if the stored tokens already work."""
+        """Starts a login and returns the URL to open, or None if the stored tokens already work.
+
+        connect opens the server with the given provider; it must run outside the caller's task.
+        """
         storage = self._storage(server)
-        stale_address = storage.redirect_uris() and redirect_uri not in storage.redirect_uris()
-        stale_url_id = (storage.client_id() or "").startswith(_origin(redirect_uri)) and (
-            storage.client_id() != _url_client_id(redirect_uri)
+        client = storage.read().get("client", {})
+        stale_address = client.get("redirect_uris") and redirect_uri not in client["redirect_uris"]
+        stale_url_id = client.get("client_id", "").startswith(_origin(redirect_uri)) and (
+            client["client_id"] != _url_client_id(redirect_uri)
         )
         if stale_address or stale_url_id:
             # The client was set up for another address of this service, or under an older URL client id.
@@ -184,7 +178,7 @@ class OAuthManager:
 
         async def login() -> None:
             try:
-                await asyncio.wait_for(run_isolated(connect(provider)), AUTHORIZE_TIMEOUT_S)
+                await asyncio.wait_for(connect(provider), AUTHORIZE_TIMEOUT_S)
             except Exception as exc:  # noqa: BLE001
                 if not flow.url.done():
                     flow.url.set_exception(exc)
@@ -241,10 +235,8 @@ class OAuthManager:
         storage = self._storage(server)
         if await storage.get_client_info() is not None:
             return
-        metadata = await _authorization_server_metadata(server.url)
-        if metadata is not None:
-            storage.set_server_metadata(metadata)
-        if metadata is None or metadata.get("registration_endpoint"):
+        metadata = await storage.server_metadata(server.url)
+        if metadata is None or metadata.registration_endpoint:
             return
         client_id = _url_client_id(redirect_uri)
         await storage.set_client_info(
@@ -274,18 +266,19 @@ def _url_client_id(redirect_uri: str) -> str:
     return f"{_origin(redirect_uri)}/{APP_NAME}"
 
 
-async def _authorization_server_metadata(server_url: str) -> dict | None:
-    """RFC 9728 resource metadata, then RFC 8414 server metadata; None when neither is published."""
-    url = urlparse(server_url)
-    origin = f"{url.scheme}://{url.netloc}"
+async def _discover_server_metadata(server_url: str) -> OAuthMetadata | None:
+    """RFC 9728 resource metadata, then RFC 8414 / OpenID server metadata, as the SDK discovers them."""
     async with httpx2.AsyncClient(timeout=10) as client:
-        issuer = origin
-        for path in (f"/.well-known/oauth-protected-resource{url.path}", "/.well-known/oauth-protected-resource"):
-            response = await client.get(origin + path)
-            if response.status_code == 200:
-                issuer = (response.json().get("authorization_servers") or [origin])[0].rstrip("/")
+        issuer = None
+        for url in build_protected_resource_metadata_discovery_urls(None, server_url):
+            resource = await handle_protected_resource_response(await client.send(create_oauth_metadata_request(url)))
+            if resource is not None:
+                issuer = str(resource.authorization_servers[0]) if resource.authorization_servers else None
                 break
-        issuer_url = urlparse(issuer)
-        well_known = f"{issuer_url.scheme}://{issuer_url.netloc}/.well-known/oauth-authorization-server"
-        response = await client.get(well_known + issuer_url.path.rstrip("/"))
-        return response.json() if response.status_code == 200 else None
+        for url in build_oauth_authorization_server_metadata_discovery_urls(issuer, server_url):
+            keep_trying, metadata = await handle_auth_metadata_response(
+                await client.send(create_oauth_metadata_request(url))
+            )
+            if metadata is not None or not keep_trying:
+                return metadata
+    return None
