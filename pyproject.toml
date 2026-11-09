@@ -35,6 +35,10 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "BLE"]
 # Catch-alls are deliberate at the edges: a probe, a pipeline run or an MCP connection must report any failure
 # to the page or the device instead of crashing the service.
 ignore = ["BLE001"]
+fixable = ["A", "B", "C", "D", "E", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
 
 [dependency-groups]
 dev = [
