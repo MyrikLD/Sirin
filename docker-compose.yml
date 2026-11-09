@@ -3,9 +3,8 @@ services:
     image: ghcr.io/myrikld/sirin:latest
     build: .
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
+    environment:
+      - SIRIN_PUBLIC_URL=${SIRIN_PUBLIC_URL:-http://127.0.0.1:8765}
     volumes:
       - ./data:/data
     ports:
