@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from voice_orchestrator.web.deps import RuntimeDep
+from sirin.web.deps import RuntimeDep
 
 router = APIRouter(prefix="/tts")
 

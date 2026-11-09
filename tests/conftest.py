@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from voice_orchestrator.config import AppSettings
-from voice_orchestrator.vad import SileroModel
+from sirin.config import AppSettings
+from sirin.vad import SileroModel
 
 # Same release and hash as the Dockerfile.
 MODEL_URL = "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx"
@@ -31,5 +31,5 @@ def vad_model(vad_model_path) -> SileroModel:
 
 @pytest.fixture
 def app_settings(tmp_path, vad_model_path) -> AppSettings:
-    # Explicit values win over VO_* variables and .env of the machine running the tests.
+    # Explicit values win over SIRIN_* variables and .env of the machine running the tests.
     return AppSettings(host="127.0.0.1", port=8765, public_url=None, data_dir=tmp_path, vad_model=vad_model_path)

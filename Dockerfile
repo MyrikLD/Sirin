@@ -17,8 +17,8 @@ ADD --checksum=sha256:1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d
 COPY --from=build /app/.venv /app/.venv
 ENV PATH=/app/.venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
-    VO_DATA_DIR=/data \
-    VO_VAD_MODEL=/app/models/silero_vad.onnx
+    SIRIN_DATA_DIR=/data \
+    SIRIN_VAD_MODEL=/app/models/silero_vad.onnx
 VOLUME /data
 EXPOSE 8765
-ENTRYPOINT ["voice-orchestrator"]
+ENTRYPOINT ["sirin"]

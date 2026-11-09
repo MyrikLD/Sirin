@@ -19,9 +19,9 @@ from wyoming.tts import (
     SynthesizeVoice,
 )
 
-from voice_orchestrator.clips import LiveClip
-from voice_orchestrator.config import SttConfig, TtsConfig
-from voice_orchestrator.vad import SAMPLE_RATE, SAMPLE_WIDTH
+from sirin.clips import LiveClip
+from sirin.config import SttConfig, TtsConfig
+from sirin.vad import SAMPLE_RATE, SAMPLE_WIDTH
 
 _log = logging.getLogger(__name__)
 

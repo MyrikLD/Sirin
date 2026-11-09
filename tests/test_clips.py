@@ -1,6 +1,6 @@
 import asyncio
 
-from voice_orchestrator.clips import LiveClip
+from sirin.clips import LiveClip
 
 
 async def test_reader_gets_the_header_and_audio_written_while_it_reads():

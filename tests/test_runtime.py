@@ -1,5 +1,5 @@
-from voice_orchestrator.config import RuntimeSettings
-from voice_orchestrator.runtime import Runtime
+from sirin.config import RuntimeSettings
+from sirin.runtime import Runtime
 
 # A closed local port: satellites stay disconnected, and nothing leaves the machine.
 DEVICES = [{"name": "a", "host": "127.0.0.1", "port": 1}, {"name": "b", "host": "127.0.0.1", "port": 2}]

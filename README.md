@@ -1,11 +1,11 @@
-# voice-orchestrator
+# Sirin
 
 A voice pipeline for ESPHome satellites that keeps Home Assistant out of the voice path.
 It connects to the device over the ESPHome native API, the same way HA does, and answers
 its voice_assistant events itself.
 
 ```
-satellite ─ESPHome API─► voice-orchestrator ─► STT (Wyoming)
+satellite ─ESPHome API─► Sirin ─► STT (Wyoming)
                            ├─ LLM (pydantic-ai, OpenAI-compatible /v1)
                            ├─ MCP servers (streamable HTTP), including the HA MCP Server
                            └─ TTS (Wyoming) → WAV over HTTP → the device's media_player
@@ -18,7 +18,7 @@ pip install -e .
 curl -fL --create-dirs -o models/silero_vad.onnx \
   https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.3/src/silero_vad/data/silero_vad.onnx
 echo "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3  models/silero_vad.onnx" | sha256sum -c
-voice-orchestrator   # -v logs protocol events
+sirin   # -v logs protocol events
 ```
 
 The Docker image already contains the VAD model.
@@ -30,9 +30,9 @@ docker compose up -d --build
 ```
 
 The compose file uses host networking, because satellites download answers from the address
-the orchestrator has on its route to them. Settings are kept in `./data`, environment in `.env`.
-CI publishes a multi-arch image (amd64, arm64) to `ghcr.io/<owner>/voice-orchestrator`; set
-`VO_IMAGE` to it to pull instead of building.
+Sirin has on its route to them. Settings are kept in `./data`, environment in `.env`.
+CI publishes a multi-arch image (amd64, arm64) to `ghcr.io/<owner>/sirin`; set
+`SIRIN_IMAGE` to it to pull instead of building.
 
 Then open `http://<host>:8765/` and fill in devices, STT, TTS, LLM and MCP servers.
 Each block has a **Test** button: it checks the connection with the unsaved values and
@@ -43,11 +43,11 @@ Environment variables (or `.env`):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VO_PUBLIC_URL` | this host's address on the route to each satellite, with `VO_PORT` | Base URL satellites download answers from; set it only behind a proxy or NAT |
-| `VO_HOST` / `VO_PORT` | `0.0.0.0` / `8765` | HTTP server address |
-| `VO_AUDIO_TTL_S` | `300` | How long a finished answer stays downloadable |
-| `VO_DATA_DIR` | `data` | Where the settings page stores its settings |
-| `VO_VAD_MODEL` | `models/silero_vad.onnx` | Silero VAD ONNX model file |
+| `SIRIN_PUBLIC_URL` | this host's address on the route to each satellite, with `SIRIN_PORT` | Base URL satellites download answers from; set it only behind a proxy or NAT |
+| `SIRIN_HOST` / `SIRIN_PORT` | `0.0.0.0` / `8765` | HTTP server address |
+| `SIRIN_AUDIO_TTL_S` | `300` | How long a finished answer stays downloadable |
+| `SIRIN_DATA_DIR` | `data` | Where the settings page stores its settings |
+| `SIRIN_VAD_MODEL` | `models/silero_vad.onnx` | Silero VAD ONNX model file |
 
 The settings page has no login. Keep the port reachable only from a trusted network.
 
@@ -68,7 +68,7 @@ Every stage streams:
 
 - **mic → STT.** Chunks go to the Wyoming ASR as they arrive. The server decides where the
   utterance ends: the device streams until the server sends `STT_VAD_END`. End-of-utterance
-  detection is Home Assistant's segmenter on top of the Silero VAD model (`VO_VAD_MODEL`);
+  detection is Home Assistant's segmenter on top of the Silero VAD model (`SIRIN_VAD_MODEL`);
   tune it with `vad.*` on the settings page.
 - **LLM → TTS.** The pydantic-ai agent yields text deltas, including what the model says
   between tool calls. If the TTS server accepts streaming input (`supports_synthesize_streaming`),

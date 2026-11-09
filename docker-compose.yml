@@ -1,11 +1,11 @@
 services:
-  voice-orchestrator:
-    image: ${VO_IMAGE:-voice-orchestrator:latest}
+  sirin:
+    image: ${SIRIN_IMAGE:-sirin:latest}
     build: .
     restart: unless-stopped
-    # Satellites download answers from the address the orchestrator sees on its route to them;
+    # Satellites download answers from the address Sirin sees on its route to them;
     # inside a bridge network that would be the container's own IP. Without host networking,
-    # publish 8765 and set VO_PUBLIC_URL to an address the satellites can reach.
+    # publish 8765 and set SIRIN_PUBLIC_URL to an address the satellites can reach.
     network_mode: host
     env_file:
       - path: .env

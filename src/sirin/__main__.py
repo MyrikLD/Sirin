@@ -8,9 +8,9 @@ from types import FrameType
 import uvicorn
 from pydantic import ValidationError
 
-from voice_orchestrator.config import AppSettings
-from voice_orchestrator.status import StatusBoard
-from voice_orchestrator.web import create_app
+from sirin.config import AppSettings
+from sirin.status import StatusBoard
+from sirin.web import create_app
 
 
 class _Server(uvicorn.Server):
@@ -40,7 +40,7 @@ def main() -> None:
     try:
         settings = AppSettings()
     except ValidationError as exc:
-        raise SystemExit(f"Bad environment (VO_* variables or .env):\n{exc}") from exc
+        raise SystemExit(f"Bad environment (SIRIN_* variables or .env):\n{exc}") from exc
     app = create_app(settings)
     config = uvicorn.Config(app, host=settings.host, port=settings.port, log_config=None, timeout_graceful_shutdown=3)
     # uvicorn re-raises the exit signal once shut down; uvicorn.run() swallows it the same way.

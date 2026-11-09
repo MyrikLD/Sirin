@@ -2,9 +2,9 @@ import pytest
 from jinja2.exceptions import SecurityError
 from pydantic import ValidationError
 
-from voice_orchestrator.config import LLMConfig, RuntimeSettings
-from voice_orchestrator.prompt import compile_prompt
-from voice_orchestrator.speech import split_sentences
+from sirin.config import LLMConfig, RuntimeSettings
+from sirin.prompt import compile_prompt
+from sirin.speech import split_sentences
 
 
 async def _deltas(*parts: str):

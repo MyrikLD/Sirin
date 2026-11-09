@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime
 
-from voice_orchestrator.config import VadConfig
+from sirin.config import VadConfig
 
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
@@ -36,7 +36,7 @@ class SileroModel:
 
     def __init__(self, path: Path) -> None:
         if not path.is_file():
-            raise FileNotFoundError(f"Silero VAD model not found at {path}; set VO_VAD_MODEL to its path")
+            raise FileNotFoundError(f"Silero VAD model not found at {path}; set SIRIN_VAD_MODEL to its path")
         options = onnxruntime.SessionOptions()
         # One frame is tiny: extra threads only add scheduling overhead.
         options.intra_op_num_threads = 1

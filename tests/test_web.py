@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import httpx2
 import pytest
 
-from voice_orchestrator.web import create_app
+from sirin.web import create_app
 
 
 @asynccontextmanager

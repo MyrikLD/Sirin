@@ -1,7 +1,7 @@
 import pytest
 
-from voice_orchestrator.config import VadConfig
-from voice_orchestrator.vad import Endpointer, SileroModel, VadEvent
+from sirin.config import VadConfig
+from sirin.vad import Endpointer, SileroModel, VadEvent
 
 CHUNK = bytes(1024)  # 32 ms of 16 kHz mono silence, as the satellite sends it
 
@@ -16,5 +16,5 @@ def test_silence_times_out_without_speech(vad_model):
 
 
 def test_missing_model_file_names_the_setting(tmp_path):
-    with pytest.raises(FileNotFoundError, match="VO_VAD_MODEL"):
+    with pytest.raises(FileNotFoundError, match="SIRIN_VAD_MODEL"):
         SileroModel(tmp_path / "silero_vad.onnx")

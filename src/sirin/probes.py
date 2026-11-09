@@ -6,11 +6,11 @@ from aioesphomeapi import VoiceAssistantFeature
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
-from voice_orchestrator.agent import explain_connect_error, list_server_tools
-from voice_orchestrator.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
-from voice_orchestrator.oauth import OAuthManager
-from voice_orchestrator.satellite import device_client, voice_support_problem
-from voice_orchestrator.speech import describe
+from sirin.agent import explain_connect_error, list_server_tools
+from sirin.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
+from sirin.oauth import OAuthManager
+from sirin.satellite import device_client, voice_support_problem
+from sirin.speech import describe
 
 PROBE_TIMEOUT_S = 10.0
 
@@ -101,7 +101,7 @@ async def probe_mcp(cfg: McpServerConfig, oauth: OAuthManager) -> ProbeResult:
 
 @_guard
 async def probe_device(cfg: DeviceConfig) -> ProbeResult:
-    client = device_client(cfg, "voice-orchestrator-probe")
+    client = device_client(cfg, "sirin-probe")
     try:
         await client.connect(login=True)
         info = await client.device_info()

@@ -15,8 +15,8 @@ The Python environment is already active; do not use `uv run`.
 
 ```sh
 pip install -e .              # install (src layout, hatchling)
-voice-orchestrator -v         # run; -v enables DEBUG and protocol event logs
-python -m voice_orchestrator  # same entry point
+sirin -v                      # run; -v enables DEBUG and protocol event logs
+python -m sirin               # same entry point
 ruff check src tests && ruff format src tests   # lint/format (line-length 120)
 pytest                        # basic offline tests (tests/), about a second
 docker compose up -d --build  # container; host networking, settings in ./data
@@ -30,7 +30,7 @@ MCP isolation, partial rebuild, settings API). Tests need network once: `conftes
 the pytest cache.
 
 The settings page at `http://<host>:8765/` stores config in `data/settings.json` (git-ignored); process-level config
-comes from `VO_*` env vars or `.env` (`AppSettings`).
+comes from `SIRIN_*` env vars or `.env` (`AppSettings`).
 
 ## Architecture
 
@@ -57,14 +57,14 @@ Request flow for one utterance:
 3. `_listen()` streams mic chunks to Wyoming ASR while `vad.Endpointer` decides end-of-utterance. The endpointer is
    HA's segmenter on top of the Silero VAD ONNX model, run with onnxruntime: one `SileroModel` per process,
    recurrent state per utterance. The code does not download the model: the Dockerfile adds it to the image
-   (pinned release, SHA-256 checked) and sets `VO_VAD_MODEL`; `Runtime` loads it at start and fails if the file is
+   (pinned release, SHA-256 checked) and sets `SIRIN_VAD_MODEL`; `Runtime` loads it at start and fails if the file is
    missing. Its timings mirror HA's and its thresholds are Silero's defaults; they are intentionally not configurable.
 4. `think()` / `speak()` / `start_playback()` run concurrently in a `TaskGroup`: agent text deltas flow through a
    queue into `TextToSpeech.speak()`, which writes PCM into the `LiveClip`; once the first audio exists,
    `INTENT_PROGRESS tts_start_streaming=1` tells the device to start downloading.
 5. `GET /tts/{id}.wav` (`web/routers/tts.py`) streams the `LiveClip` with unknown-length WAV headers while it is
    still being written. `ClipStore.base_url_for()` picks the URL host as the local IP routed toward that device
-   unless `VO_PUBLIC_URL` is set.
+   unless `SIRIN_PUBLIC_URL` is set.
 
 `Agent` (`agent.py`):
 - Wraps pydantic-ai `run_stream_events`, yielding only text. It emits `"\n"` at each `TextPart` end so text

@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from voice_orchestrator.runtime import Runtime
+from sirin.runtime import Runtime
 
 
 def get_runtime(request: Request) -> Runtime:

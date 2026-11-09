@@ -24,7 +24,7 @@ jobs:
       - name: Package imports
         run: |
           uv sync --locked --no-dev
-          .venv/bin/python -c "import voice_orchestrator.web, voice_orchestrator.probes"
+          .venv/bin/python -c "import sirin.web, sirin.probes"
       - name: Tests
         run: |
           uv sync --locked

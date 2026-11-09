@@ -12,9 +12,9 @@ from aioesphomeapi import (
     VoiceAssistantFeature,
 )
 
-from voice_orchestrator.config import DeviceConfig
-from voice_orchestrator.pipeline import PipelineRun, Services
-from voice_orchestrator.status import ItemStatus
+from sirin.config import DeviceConfig
+from sirin.pipeline import PipelineRun, Services
+from sirin.status import ItemStatus
 
 _log = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class Satellite:
         self._status = ItemStatus(state="pending", detail="connecting")
         self.audio_base_url: str | None = None
         self.services = services
-        self._client = device_client(cfg, "voice-orchestrator")
+        self._client = device_client(cfg, "sirin")
         self._reconnect = ReconnectLogic(
             client=self._client,
             on_connect=self._on_connect,

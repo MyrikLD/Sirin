@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 
-from voice_orchestrator.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
-from voice_orchestrator.probes import ProbeResult, probe_device, probe_llm, probe_mcp, probe_stt, probe_tts
-from voice_orchestrator.web.deps import RuntimeDep
+from sirin.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
+from sirin.probes import ProbeResult, probe_device, probe_llm, probe_mcp, probe_stt, probe_tts
+from sirin.web.deps import RuntimeDep
 
 # Probes take the unsaved form values, so a block can be checked before it is applied.
 router = APIRouter(prefix="/api/probe")

@@ -2,9 +2,9 @@ import asyncio
 
 import pytest
 
-from voice_orchestrator.agent import list_server_tools
-from voice_orchestrator.config import McpServerConfig
-from voice_orchestrator.oauth import OAuthManager
+from sirin.agent import list_server_tools
+from sirin.config import McpServerConfig
+from sirin.oauth import OAuthManager
 
 
 async def _ignore(_: str) -> None:

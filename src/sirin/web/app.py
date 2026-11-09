@@ -7,9 +7,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from voice_orchestrator.config import AppSettings
-from voice_orchestrator.runtime import Runtime
-from voice_orchestrator.web.routers import oauth, probes, settings, status, tts
+from sirin.config import AppSettings
+from sirin.runtime import Runtime
+from sirin.web.routers import oauth, probes, settings, status, tts
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -21,10 +21,10 @@ def _check_public_url(app_settings: AppSettings) -> None:
     if url is None:
         return
     if url.host == "localhost" or _is_loopback_ip(url.host or ""):
-        _log.warning("VO_PUBLIC_URL %s is a loopback address: satellites cannot download answers from it", url)
+        _log.warning("SIRIN_PUBLIC_URL %s is a loopback address: satellites cannot download answers from it", url)
     if url.port != app_settings.port:
         _log.warning(
-            "VO_PUBLIC_URL %s points to port %s, but the server listens on %s: satellites reach it "
+            "SIRIN_PUBLIC_URL %s points to port %s, but the server listens on %s: satellites reach it "
             "only through a proxy on that port",
             url,
             url.port,
@@ -49,7 +49,7 @@ def create_app(app_settings: AppSettings) -> FastAPI:
         yield
         await runtime.stop()
 
-    app = FastAPI(title="voice-orchestrator", lifespan=lifespan)
+    app = FastAPI(title="sirin", lifespan=lifespan)
     app.state.runtime = runtime
 
     for module in (status, tts, settings, probes, oauth):

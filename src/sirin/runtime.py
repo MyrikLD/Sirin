@@ -1,15 +1,15 @@
 import asyncio
 import logging
 
-from voice_orchestrator.agent import Agent
-from voice_orchestrator.clips import ClipStore
-from voice_orchestrator.config import AppSettings, RuntimeSettings, SettingsStore
-from voice_orchestrator.oauth import OAuthManager
-from voice_orchestrator.pipeline import Services
-from voice_orchestrator.satellite import Satellite
-from voice_orchestrator.speech import SpeechToText, TextToSpeech
-from voice_orchestrator.status import Status, StatusBoard
-from voice_orchestrator.vad import SileroModel
+from sirin.agent import Agent
+from sirin.clips import ClipStore
+from sirin.config import AppSettings, RuntimeSettings, SettingsStore
+from sirin.oauth import OAuthManager
+from sirin.pipeline import Services
+from sirin.satellite import Satellite
+from sirin.speech import SpeechToText, TextToSpeech
+from sirin.status import Status, StatusBoard
+from sirin.vad import SileroModel
 
 _log = logging.getLogger(__name__)
 

@@ -5,9 +5,9 @@ from fastapi.responses import HTMLResponse
 from mcp.client.auth import OAuthClientProvider
 from pydantic import BaseModel, Field
 
-from voice_orchestrator.agent import list_server_tools
-from voice_orchestrator.config import McpServerConfig
-from voice_orchestrator.web.deps import RuntimeDep
+from sirin.agent import list_server_tools
+from sirin.config import McpServerConfig
+from sirin.web.deps import RuntimeDep
 
 router = APIRouter()
 

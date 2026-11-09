@@ -2,8 +2,8 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from voice_orchestrator.config import RuntimeSettings
-from voice_orchestrator.web.deps import RuntimeDep
+from sirin.config import RuntimeSettings
+from sirin.web.deps import RuntimeDep
 
 router = APIRouter(prefix="/api/settings")
 

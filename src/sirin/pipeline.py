@@ -7,11 +7,11 @@ from aioesphomeapi import APIClient, APIConnectionError
 from aioesphomeapi import VoiceAssistantEventType as Ev
 from pydantic import BaseModel, ConfigDict
 
-from voice_orchestrator.agent import Agent
-from voice_orchestrator.clips import ClipStore, LiveClip
-from voice_orchestrator.config import VadConfig
-from voice_orchestrator.speech import SpeechToText, TextToSpeech
-from voice_orchestrator.vad import Endpointer, SileroModel, VadEvent
+from sirin.agent import Agent
+from sirin.clips import ClipStore, LiveClip
+from sirin.config import VadConfig
+from sirin.speech import SpeechToText, TextToSpeech
+from sirin.vad import Endpointer, SileroModel, VadEvent
 
 _log = logging.getLogger(__name__)
 

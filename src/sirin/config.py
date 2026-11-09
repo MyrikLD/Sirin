@@ -5,8 +5,8 @@ from jinja2 import TemplateSyntaxError
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from voice_orchestrator.files import write_private
-from voice_orchestrator.prompt import compile_prompt
+from sirin.files import write_private
+from sirin.prompt import compile_prompt
 
 # Schema extensions the settings page renders from.
 # A field shown as a dropdown, filled from the block's probe suggestions.
@@ -21,9 +21,9 @@ def probed(path: str) -> ConfigDict:
 
 
 class AppSettings(BaseSettings):
-    """Process-level settings from the environment (prefix VO_) or a .env file."""
+    """Process-level settings from the environment (prefix SIRIN_) or a .env file."""
 
-    model_config = SettingsConfigDict(env_prefix="VO_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="SIRIN_", env_file=".env", extra="ignore")
 
     host: str = Field(default="0.0.0.0", description="Bind address of the HTTP server")
     port: int = Field(default=8765, description="Bind port of the HTTP server")

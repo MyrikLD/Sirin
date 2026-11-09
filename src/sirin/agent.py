@@ -25,11 +25,11 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai_compatible import OpenAICompatibleProvider
 from pydantic_ai.toolsets import AbstractToolset
 
-from voice_orchestrator.config import LLMConfig, McpServerConfig
-from voice_orchestrator.isolation import IsolatedToolset
-from voice_orchestrator.oauth import OAuthManager, OAuthRequired
-from voice_orchestrator.prompt import compile_prompt
-from voice_orchestrator.status import ItemStatus
+from sirin.config import LLMConfig, McpServerConfig
+from sirin.isolation import IsolatedToolset
+from sirin.oauth import OAuthManager, OAuthRequired
+from sirin.prompt import compile_prompt
+from sirin.status import ItemStatus
 
 _log = logging.getLogger(__name__)
 

@@ -25,12 +25,12 @@ from mcp.shared.auth import (
 )
 from pydantic import AnyUrl
 
-from voice_orchestrator.config import McpServerConfig
-from voice_orchestrator.files import write_private
+from sirin.config import McpServerConfig
+from sirin.files import write_private
 
 _log = logging.getLogger(__name__)
 
-APP_NAME = "voice-orchestrator"
+APP_NAME = "sirin"
 
 # How long a started authorization waits for the user to finish it in the browser.
 AUTHORIZE_TIMEOUT_S = 600
@@ -226,7 +226,7 @@ class OAuthManager:
 
         This is IndieAuth, as Home Assistant does it: the client id is our origin, accepted because
         the redirect URI shares its scheme and host. The SDK does this by itself only for HTTPS
-        client ids, so a plain-HTTP orchestrator would otherwise POST to a /register that does not exist.
+        client ids, so a plain-HTTP Sirin would otherwise POST to a /register that does not exist.
         """
         storage = self._storage(server)
         if await storage.get_client_info() is not None:
