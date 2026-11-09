@@ -15,7 +15,7 @@ MODEL_SHA256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3
 @pytest.fixture(scope="session")
 def vad_model_path(pytestconfig) -> Path:
     # Downloaded on the first run only: the pytest cache keeps the file between runs.
-    path = pytestconfig.cache.mkdir("silero") / f"silero_vad-{MODEL_SHA256[:12]}.onnx"
+    path = pytestconfig.cache.mkdir("silero") / f"silero_vad.onnx"
     if not path.exists():
         with urllib.request.urlopen(MODEL_URL, timeout=60) as response:
             content = response.read()
