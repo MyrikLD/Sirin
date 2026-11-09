@@ -1,14 +1,12 @@
 services:
   sirin:
-    image: ${SIRIN_IMAGE:-sirin:latest}
+    image: ghcr.io/myrikld/sirin:latest
     build: .
     restart: unless-stopped
-    # Satellites download answers from the address Sirin sees on its route to them;
-    # inside a bridge network that would be the container's own IP. Without host networking,
-    # publish 8765 and set SIRIN_PUBLIC_URL to an address the satellites can reach.
-    network_mode: host
     env_file:
       - path: .env
         required: false
     volumes:
       - ./data:/data
+    ports:
+      - "8765:8765"
