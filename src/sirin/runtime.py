@@ -57,13 +57,12 @@ class Runtime:
 
     async def _apply(self, settings: RuntimeSettings, reconnect_tools: bool) -> None:
         old, previous = self._services, self.settings
-        new_agent = (
+        if (
             old is None
             or reconnect_tools
             or settings.llm != previous.llm
             or settings.mcp_servers != previous.mcp_servers
-        )
-        if new_agent:
+        ):
             agent = Agent(
                 settings.llm, settings.mcp_servers, self.oauth, self.board.touch, [reminder_tools(self.reminders)]
             )
@@ -94,7 +93,7 @@ class Runtime:
         for removed in running.values():
             await removed.stop()
 
-        if new_agent and old is not None:
+        if old is not None and old.agent is not agent:
             await old.agent.close()
         self._services, self._satellites, self.settings = services, satellites, settings
         self.board.touch()

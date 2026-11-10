@@ -19,14 +19,14 @@ sirin -v                      # run; -v enables DEBUG and protocol event logs
 python -m sirin               # same entry point
 ruff check src tests && ruff format src tests   # lint/format (line-length 120)
 pytest                        # basic offline tests (tests/), about a second
-docker compose up -d --build  # container; host networking, settings in ./data
+docker compose up -d --build  # container; bridge network, needs SIRIN_PUBLIC_URL in .env, settings in ./data
 ```
 
 CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check and pytest, then builds the image for
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
 Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
-MCP isolation, partial rebuild, settings API, reminder scheduling and tools). Tests need network once: `conftest.py`
+MCP isolation and reconnect, history cap, partial rebuild, settings API, reminder scheduling and tools). Tests need network once: `conftest.py`
 downloads the VAD model into the pytest cache.
 
 The settings page at `http://<host>:8765/` stores config in `data/settings.json` (git-ignored); process-level config
@@ -69,13 +69,18 @@ Request flow for one utterance:
 `Agent` (`agent.py`):
 - Wraps pydantic-ai `run_stream_events`, yielding only text. It emits `"\n"` at each `TextPart` end so text
   said before a tool call is spoken while the tool runs.
-- History is kept in memory per `conversation_id` with a TTL. Satellites that send no id use `device:<name>`.
+- History is kept in memory per `conversation_id` with a TTL and capped at `MAX_HISTORY_TURNS` user turns.
+  Satellites that send no id use `device:<name>`.
 - `build_toolset()` returns an `IsolatedToolset` (`isolation.py`): the MCP connection is opened and held in a task
   of its own, because a failed anyio transport leaks its cancel scope into the task that opened it. Entering is
   re-entrant (the agent holds each toolset open; every agent run enters it again without reconnecting). Open MCP
   servers only through `build_toolset()` / `list_server_tools()`.
-- Tools are prefixed `<server>_`. A server that fails to connect is skipped and reported in
-  `tool_status`, not raised.
+- One `_hold()` task per server keeps it connected for the agent's life: a server that fails to connect or loses
+  its connection is reported in `tool_status`, not raised, and tried again with a doubling pause. A tool call that
+  finds the server gone (`httpx2.TransportError`) counts as a lost connection and the model gets `ToolFailed`: the
+  MCP client does not recover by itself after the server restarts. Each run gets the
+  toolsets connected at that moment (`run_stream_events(toolsets=...)`), MCP first and built-in tools last.
+- Tools are prefixed `<server>_`.
 
 Reminders (`reminders.py`): built-in agent tools (`reminder_tools()`, passed to `Agent` with no prefix) read the
 device from `TurnDeps`, the pydantic-ai deps of every run. The LLM writes a prompt for itself; `Reminders` (owned by
@@ -83,7 +88,9 @@ device from `TurnDeps`, the pydantic-ai deps of every run. The LLM writes a prom
 `Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the `device:<name>`
 conversation, TTS writes a `LiveClip`, and the device plays it via the voice_assistant announce API (`ANNOUNCE`
 feature). An offline device is retried for up to `GRACE`; reminders missed while the service was down are dropped at
-start. Times are the process's local zone.
+start. A recurring reminder has a cron `schedule` (`cronsim`, read in local wall time by `cron_next()`) and an optional
+`until`; it keeps its id and its one task: after each occurrence (announced or dropped) `_run` moves `due` to the next
+time, and at start a missed one moves forward instead of being dropped. Times are the process's local zone.
 
 Status (`status.py`): `Status.items[<settings list>][<item name>]` is an `ItemStatus` (`ok | pending | error` +
 `detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current, including an MCP connection

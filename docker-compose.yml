@@ -4,7 +4,8 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      - SIRIN_PUBLIC_URL=${SIRIN_PUBLIC_URL:-http://127.0.0.1:8765}
+      # Inside the bridge network the service cannot see the address satellites reach it at.
+      - SIRIN_PUBLIC_URL=${SIRIN_PUBLIC_URL:?set it to http://<this host's LAN address>:8765}
       # Local time zone for reminders and now() in the system prompt.
       - TZ=${TZ:-UTC}
     volumes:

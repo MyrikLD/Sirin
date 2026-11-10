@@ -2,10 +2,10 @@ import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from aioesphomeapi import APIClient, APIConnectionError
 from aioesphomeapi import VoiceAssistantEventType as Ev
-from pydantic import BaseModel, ConfigDict
 
 from sirin.agent import Agent
 from sirin.clips import ClipStore, LiveClip
@@ -19,9 +19,8 @@ _log = logging.getLogger(__name__)
 AUDIO_GAP_TIMEOUT_S = 3.0
 
 
-class Services(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
+@dataclass(frozen=True)
+class Services:
     stt: SpeechToText
     tts: TextToSpeech
     agent: Agent
@@ -65,12 +64,17 @@ class PipelineRun:
         self._send(Ev.VOICE_ASSISTANT_RUN_START, {"url": url})
         try:
             await self._run(clip, url)
-        except PipelineError as exc:
-            _log.warning("[%s] %s: %s", self._device, exc.code, exc)
-            self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": exc.code, "message": str(exc)})
         except Exception as exc:
-            _log.exception("[%s] pipeline failed", self._device)
-            self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": "pipeline-error", "message": str(exc)[:200]})
+            # A stage that fails inside a TaskGroup arrives as a group; its first member is the cause.
+            while isinstance(exc, ExceptionGroup):
+                exc = exc.exceptions[0]
+            if isinstance(exc, PipelineError):
+                code = exc.code
+                _log.warning("[%s] %s: %s", self._device, code, exc)
+            else:
+                code = "pipeline-error"
+                _log.error("[%s] pipeline failed", self._device, exc_info=exc)
+            self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": code, "message": str(exc)[:200]})
         finally:
             await clip.close()
             self._send(Ev.VOICE_ASSISTANT_RUN_END)
@@ -109,15 +113,9 @@ class PipelineRun:
                 _log.info("[%s] the device plays the answer from %s", self._device, url)
                 self._send(Ev.VOICE_ASSISTANT_INTENT_PROGRESS, {"tts_start_streaming": "1"})
 
-        async def speak() -> None:
-            try:
-                await self._s.tts.speak(text_stream(), clip)
-            finally:
-                await clip.close()
-
         async with asyncio.TaskGroup() as tg:
             tg.create_task(think())
-            tg.create_task(speak())
+            tg.create_task(self._s.tts.speak(text_stream(), clip))
             tg.create_task(start_playback())
 
         if await clip.wait_audio():

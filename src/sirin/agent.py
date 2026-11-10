@@ -13,6 +13,7 @@ from pydantic_ai import (
     AgentRunResultEvent,
     FunctionToolCallEvent,
     ModelMessage,
+    ModelRequest,
     ModelSettings,
     PartDeltaEvent,
     PartEndEvent,
@@ -20,6 +21,7 @@ from pydantic_ai import (
     TextPart,
     TextPartDelta,
     UsageLimits,
+    UserPromptPart,
 )
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -37,6 +39,11 @@ _log = logging.getLogger(__name__)
 # Tool-call rounds before the agent gives up on an answer.
 MAX_TOOL_ROUNDS = 8
 LLM_TIMEOUT_S = 60
+# User turns of a dialog that the model sees again; older ones are forgotten.
+MAX_HISTORY_TURNS = 20
+# Pause before an MCP server that failed or was lost is tried again; it doubles up to the maximum.
+RECONNECT_MIN_S = 2.0
+RECONNECT_MAX_S = 60.0
 
 
 class TurnDeps(BaseModel):
@@ -63,76 +70,83 @@ class Agent:
         self._mcp_servers = mcp_servers
         self._builtin_tools = builtin_tools
         self._history: dict[str, tuple[float, list[ModelMessage]]] = {}
-        self._connected: list[IsolatedToolset] = []
-        self._agent: PydanticAgent[TurnDeps, str] | None = None
+        # The toolsets of the servers connected now, by server name.
+        self._live: dict[str, AbstractToolset[TurnDeps]] = {}
+        self._holders: list[asyncio.Task[None]] = []
         self.tool_status: dict[str, ItemStatus] = {}
-
-    async def start(self) -> None:
-        # All servers connect at once, so startup waits for the slowest one rather than their sum.
-        results = await asyncio.gather(*(self._connect(server) for server in self._mcp_servers))
-        toolsets: list[AbstractToolset[TurnDeps]] = [
-            *self._builtin_tools,
-            *(
-                toolset.prefixed(server.name)
-                for server, toolset in zip(self._mcp_servers, results, strict=True)
-                if toolset is not None
-            ),
-        ]
-
-        provider = OpenAICompatibleProvider("local", base_url=self._cfg.base_url, api_key=self._cfg.api_key or "none")
+        provider = OpenAICompatibleProvider("local", base_url=cfg.base_url, api_key=cfg.api_key or "none")
         self._agent = PydanticAgent(
-            OpenAIChatModel(self._cfg.model, provider=provider),
+            OpenAIChatModel(cfg.model, provider=provider),
             deps_type=TurnDeps,
             instructions=self._render_prompt,
-            toolsets=toolsets,
-            model_settings=ModelSettings(temperature=self._cfg.temperature, timeout=LLM_TIMEOUT_S),
+            model_settings=ModelSettings(temperature=cfg.temperature, timeout=LLM_TIMEOUT_S),
         )
 
-    async def _connect(self, server: McpServerConfig) -> IsolatedToolset | None:
-        """The connected toolset, held open until close(), or None; either way tool_status says what happened."""
+    async def start(self) -> None:
+        """Returns once every server was tried, so the first dialog has the tools of the servers that are up."""
+        tried = [asyncio.Event() for _ in self._mcp_servers]
+        self._holders = [
+            asyncio.create_task(self._hold(server, event))
+            for server, event in zip(self._mcp_servers, tried, strict=True)
+        ]
+        await asyncio.gather(*(event.wait() for event in tried))
+
+    async def _hold(self, server: McpServerConfig, tried: asyncio.Event) -> None:
+        """Keeps one server connected until close(): a failed or lost connection is opened again after a pause."""
         self._set_status(server.name, ItemStatus(state="pending", detail="connecting"))
+        delay = RECONNECT_MIN_S
+        while True:
+            lost: asyncio.Queue[Exception] = asyncio.Queue()
+            try:
+                async with build_toolset(server, self._oauth, on_lost=lost.put_nowait) as toolset:
+                    count = len(await toolset.list_tools())
+                    self._live[server.name] = toolset.prefixed(server.name)
+                    _log.info("MCP server %s: %d tools", server.name, count)
+                    self._set_status(server.name, ItemStatus(state="ok", detail=f"{count} tools"))
+                    tried.set()
+                    delay = RECONNECT_MIN_S
+                    reason = f"connection lost: {await lost.get()}"
+            except Exception as exc:
+                reason = await explain_connect_error(server, exc)
+            finally:
+                self._live.pop(server.name, None)
+            if self._set_status(server.name, ItemStatus(state="error", detail=reason)):
+                _log.error(
+                    "MCP server %s is unavailable, its tools are skipped until it answers: %s", server.name, reason
+                )
+            tried.set()
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RECONNECT_MAX_S)
 
-        def lost(exc: Exception) -> None:
-            _log.error("MCP server %s connection lost: %s", server.name, exc)
-            self._set_status(server.name, ItemStatus(state="error", detail=f"connection lost: {exc}"))
-
-        try:
-            toolset = await build_toolset(server, self._oauth, on_lost=lost).__aenter__()
-            self._connected.append(toolset)
-            count = len(await toolset.list_tools())
-        except Exception as exc:
-            reason = await explain_connect_error(server, exc)
-            _log.error("MCP server %s is unavailable, its tools are skipped: %s", server.name, reason)
-            self._set_status(server.name, ItemStatus(state="error", detail=reason))
-            return None
-        _log.info("MCP server %s: %d tools", server.name, count)
-        self._set_status(server.name, ItemStatus(state="ok", detail=f"{count} tools"))
-        return toolset
-
-    def _set_status(self, name: str, status: ItemStatus) -> None:
-        if self.tool_status.get(name) != status:
-            self.tool_status[name] = status
-            self._on_status()
+    def _set_status(self, name: str, status: ItemStatus) -> bool:
+        """True if the status changed."""
+        if self.tool_status.get(name) == status:
+            return False
+        self.tool_status[name] = status
+        self._on_status()
+        return True
 
     def _render_prompt(self) -> str:
         return self._prompt.render()
 
     async def close(self) -> None:
-        await asyncio.gather(*(toolset.__aexit__(None, None, None) for toolset in self._connected))
+        for holder in self._holders:
+            holder.cancel()
+        await asyncio.gather(*self._holders, return_exceptions=True)
 
     async def reply(self, conversation_id: str, text: str, device: str) -> str:
         """The whole answer at once, for speech nobody is waiting on."""
         return "".join([delta async for delta in self.stream_reply(conversation_id, text, device)]).strip()
 
     async def stream_reply(self, conversation_id: str, text: str, device: str) -> AsyncIterator[str]:
-        if self._agent is None:
-            raise RuntimeError("Agent.start() was not called")
-
         async with self._agent.run_stream_events(
             text,
             message_history=self._messages(conversation_id),
             deps=TurnDeps(device=device),
             usage_limits=UsageLimits(request_limit=MAX_TOOL_ROUNDS + 1),
+            # The built-in tools go last: their descriptions carry the current time, and an LLM server reuses its
+            # prompt cache only up to the first changed token.
+            toolsets=[*self._live.values(), *self._builtin_tools],
         ) as events:
             async for event in events:
                 if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
@@ -148,13 +162,23 @@ class Agent:
                     args = json.dumps(event.part.args_as_dict(), ensure_ascii=False)
                     _log.info("[%s] tool %s(%s)", conversation_id, event.part.tool_name, args)
                 elif isinstance(event, AgentRunResultEvent):
-                    self._history[conversation_id] = (time.monotonic(), event.result.all_messages())
+                    self._history[conversation_id] = (time.monotonic(), _last_turns(event.result.all_messages()))
                     _log.info("[%s] %r -> %r", conversation_id, text, event.result.output)
 
     def _messages(self, conversation_id: str) -> list[ModelMessage]:
         now = time.monotonic()
         self._history = {k: v for k, v in self._history.items() if now - v[0] < self._cfg.conversation_ttl_s}
         return self._history.get(conversation_id, (now, []))[1]
+
+
+def _last_turns(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """The last MAX_HISTORY_TURNS turns. A turn starts at a user prompt, so a tool call stays with its result."""
+    starts = [
+        i
+        for i, message in enumerate(messages)
+        if isinstance(message, ModelRequest) and any(isinstance(part, UserPromptPart) for part in message.parts)
+    ]
+    return messages[starts[-MAX_HISTORY_TURNS] :] if len(starts) > MAX_HISTORY_TURNS else messages
 
 
 async def explain_connect_error(server: McpServerConfig, exc: Exception) -> str:

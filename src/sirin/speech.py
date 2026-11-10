@@ -26,6 +26,8 @@ from sirin.vad import SAMPLE_RATE, SAMPLE_WIDTH
 _log = logging.getLogger(__name__)
 
 _MIC_FORMAT = {"rate": SAMPLE_RATE, "width": SAMPLE_WIDTH, "channels": 1}
+# Longest silence of a server that owes an answer.
+READ_TIMEOUT_S = 30.0
 # Sentence end: terminal punctuation followed by whitespace, or a line break.
 _SENTENCE_END = re.compile(r"(?<=[.!?…])\s+|\n+")
 
@@ -34,8 +36,16 @@ class WyomingError(RuntimeError):
     pass
 
 
+class WyomingTimeout(WyomingError):
+    pass
+
+
 async def _read(client: AsyncTcpClient, what: str) -> Event:
-    event = await client.read_event()
+    try:
+        async with asyncio.timeout(READ_TIMEOUT_S):
+            event = await client.read_event()
+    except TimeoutError:
+        raise WyomingTimeout(f"{what} sent nothing for {READ_TIMEOUT_S:.0f} s") from None
     if event is None:
         raise WyomingError(f"{what} closed the connection")
     if Error.is_type(event.type):
@@ -87,7 +97,8 @@ class TextToSpeech:
     """Speaks a stream of text deltas into a LiveClip while the text is still being generated.
 
     Servers with streaming input get the deltas directly; for the others the text is cut into
-    sentences and each sentence is synthesized as soon as it is complete.
+    sentences and each sentence is synthesized as soon as it is complete. Either way the clip is
+    closed when the text ends or the synthesis fails.
     """
 
     def __init__(self, cfg: TtsConfig) -> None:
@@ -96,11 +107,14 @@ class TextToSpeech:
         self._server_streams: bool | None = None
 
     async def speak(self, text: AsyncIterator[str], clip: LiveClip) -> None:
-        if await self._supports_streaming():
-            await self._speak_streaming(text, clip)
-        else:
-            async for sentence in split_sentences(text):
-                await self._speak_sentence(sentence, clip)
+        try:
+            if await self._supports_streaming():
+                await self._speak_streaming(text, clip)
+            else:
+                async for sentence in split_sentences(text):
+                    await self._speak_sentence(sentence, clip)
+        finally:
+            await clip.close()
 
     async def _supports_streaming(self) -> bool:
         if self._server_streams is None:
@@ -110,25 +124,32 @@ class TextToSpeech:
         return self._server_streams
 
     async def _speak_streaming(self, text: AsyncIterator[str], clip: LiveClip) -> None:
-        async with AsyncTcpClient(self._cfg.host, self._cfg.port) as client:
-            reader = asyncio.create_task(self._pump_audio(client, clip, until=SynthesizeStopped))
-            try:
-                await client.write_event(SynthesizeStart(voice=self._voice).event())
-                async for delta in text:
-                    await client.write_event(SynthesizeChunk(text=delta).event())
-                await client.write_event(SynthesizeStop().event())
-                await reader
-            finally:
-                reader.cancel()
+        # The group ends the writer when the reader fails, and the reader when the text source fails.
+        async with AsyncTcpClient(self._cfg.host, self._cfg.port) as client, asyncio.TaskGroup() as tasks:
+            text_ended = asyncio.Event()
+            tasks.create_task(self._pump_audio(client, clip, until=SynthesizeStopped, text_ended=text_ended))
+            await client.write_event(SynthesizeStart(voice=self._voice).event())
+            async for delta in text:
+                await client.write_event(SynthesizeChunk(text=delta).event())
+            await client.write_event(SynthesizeStop().event())
+            text_ended.set()
 
     async def _speak_sentence(self, sentence: str, clip: LiveClip) -> None:
         async with AsyncTcpClient(self._cfg.host, self._cfg.port) as client:
             await client.write_event(Synthesize(text=sentence, voice=self._voice).event())
             await self._pump_audio(client, clip, until=AudioStop)
 
-    async def _pump_audio(self, client: AsyncTcpClient, clip: LiveClip, until: type) -> None:
+    async def _pump_audio(
+        self, client: AsyncTcpClient, clip: LiveClip, until: type, text_ended: asyncio.Event | None = None
+    ) -> None:
         while True:
-            event = await _read(client, "TTS")
+            try:
+                event = await _read(client, "TTS")
+            except WyomingTimeout:
+                # With streaming input the server is silent whenever the LLM is, until the text has ended.
+                if text_ended is None or text_ended.is_set():
+                    raise
+                continue
             if AudioStart.is_type(event.type):
                 start = AudioStart.from_event(event)
                 clip.set_format(start.rate, start.width, start.channels)

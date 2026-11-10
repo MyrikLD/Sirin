@@ -57,7 +57,7 @@ class Satellite:
             on_connect_error=self._on_connect_error,
             name=cfg.host,
         )
-        self._unsubscribe: Callable[[], None] | None = None
+        self._subscribed = False
         self._can_announce = False
         self._run: PipelineRun | None = None
         self._task: asyncio.Task[None] | None = None
@@ -95,11 +95,12 @@ class Satellite:
             return
 
         self._can_announce = bool(features & VoiceAssistantFeature.ANNOUNCE)
-        self._unsubscribe = self._client.subscribe_voice_assistant(
+        self._client.subscribe_voice_assistant(
             handle_start=self._handle_start,
             handle_stop=self._handle_stop,
             handle_audio=self._handle_audio,
         )
+        self._subscribed = True
         self.audio_base_url = await self.services.clips.base_url_for(self.cfg.host)
         self.status = ItemStatus(state="ok", detail=f"connected to {info.friendly_name or info.name}")
         _log.info("[%s] answers are served from %s", self.cfg.name, self.audio_base_url)
@@ -110,7 +111,7 @@ class Satellite:
 
     async def _on_disconnect(self, expected_disconnect: bool) -> None:
         _log.info("[%s] disconnected (expected=%s)", self.cfg.name, expected_disconnect)
-        self._unsubscribe = None
+        self._subscribed = False
         self.status = ItemStatus(state="pending", detail="reconnecting")
         await self._cancel_run()
 
@@ -152,7 +153,7 @@ class Satellite:
         False if the device is offline now; raises if it will never be able to announce.
         """
         async with self._announcing:
-            if self._unsubscribe is None or self.audio_base_url is None:
+            if not self._subscribed or self.audio_base_url is None:
                 return False
             if not self._can_announce:
                 raise RuntimeError(f"{self.cfg.name}: the firmware has no voice_assistant announce support")
@@ -171,13 +172,7 @@ class Satellite:
             async def chunks() -> AsyncIterator[str]:
                 yield text
 
-            async def synthesize() -> None:
-                try:
-                    await services.tts.speak(chunks(), clip)
-                finally:
-                    await clip.close()
-
-            synthesis = asyncio.create_task(synthesize())
+            synthesis = asyncio.create_task(services.tts.speak(chunks(), clip))
             try:
                 if not await clip.wait_audio():
                     raise RuntimeError("TTS produced no audio")
