@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     environment:
       - SIRIN_PUBLIC_URL=${SIRIN_PUBLIC_URL:-http://127.0.0.1:8765}
+      # Local time zone for reminders and now() in the system prompt.
+      - TZ=${TZ:-UTC}
     volumes:
       - ./data:/data
     ports:

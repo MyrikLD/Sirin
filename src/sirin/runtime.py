@@ -6,6 +6,7 @@ from sirin.clips import ClipStore
 from sirin.config import AppSettings, RuntimeSettings, SettingsStore
 from sirin.oauth import OAuthManager
 from sirin.pipeline import Services
+from sirin.reminders import Reminder, Reminders, reminder_tools
 from sirin.satellite import Satellite
 from sirin.speech import SpeechToText, TextToSpeech
 from sirin.status import Status, StatusBoard
@@ -28,6 +29,7 @@ class Runtime:
         self.board = StatusBoard()
         self._store = SettingsStore(app_settings.data_dir)
         self._vad_model = SileroModel(app_settings.vad_model)
+        self.reminders = Reminders(app_settings.data_dir, self._deliver_reminder)
         self._lock = asyncio.Lock()
         self._services: Services | None = None
         self._satellites: list[Satellite] = []
@@ -36,6 +38,7 @@ class Runtime:
     async def start(self) -> None:
         async with self._lock:
             await self._apply(self._store.load(), reconnect_tools=False)
+        await self.reminders.start()
 
     async def apply(self, settings: RuntimeSettings) -> None:
         """Saves the settings and rebuilds what they changed."""
@@ -61,7 +64,9 @@ class Runtime:
             or settings.mcp_servers != previous.mcp_servers
         )
         if new_agent:
-            agent = Agent(settings.llm, settings.mcp_servers, self.oauth, self.board.touch)
+            agent = Agent(
+                settings.llm, settings.mcp_servers, self.oauth, self.board.touch, [reminder_tools(self.reminders)]
+            )
             await agent.start()
         else:
             agent = old.agent
@@ -95,7 +100,12 @@ class Runtime:
         self.board.touch()
         _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_status))
 
+    async def _deliver_reminder(self, reminder: Reminder) -> bool:
+        satellite = next((s for s in self._satellites if s.cfg.name == reminder.device), None)
+        return satellite is not None and await satellite.announce(reminder.instruction())
+
     async def stop(self) -> None:
+        await self.reminders.stop()
         async with self._lock:
             await self._stop()
 

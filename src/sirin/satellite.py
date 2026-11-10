@@ -1,10 +1,11 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 
 from aioesphomeapi import (
     APIClient,
+    APIConnectionError,
     APIVersion,
     DeviceInfo,
     ReconnectLogic,
@@ -18,14 +19,20 @@ from sirin.status import ItemStatus
 
 _log = logging.getLogger(__name__)
 
+# How long the device may take to play an announcement.
+ANNOUNCE_TIMEOUT_S = 120
+
 
 def device_client(cfg: DeviceConfig, client_info: str) -> APIClient:
     return APIClient(cfg.host, cfg.port, None, noise_psk=cfg.noise_psk, client_info=client_info)
 
 
-def voice_support_problem(info: DeviceInfo, api_version: APIVersion | None) -> str | None:
-    """Why this device cannot serve as a satellite, or None if it can."""
-    features = info.voice_assistant_feature_flags_compat(api_version) if api_version else 0
+def voice_features(info: DeviceInfo, api_version: APIVersion | None) -> VoiceAssistantFeature:
+    return VoiceAssistantFeature(info.voice_assistant_feature_flags_compat(api_version) if api_version else 0)
+
+
+def voice_support_problem(features: VoiceAssistantFeature) -> str | None:
+    """Why a device with these features cannot serve as a satellite, or None if it can."""
     if not features & VoiceAssistantFeature.VOICE_ASSISTANT:
         return "the device has no voice_assistant component"
     if not features & VoiceAssistantFeature.API_AUDIO:
@@ -51,8 +58,10 @@ class Satellite:
             name=cfg.host,
         )
         self._unsubscribe: Callable[[], None] | None = None
+        self._can_announce = False
         self._run: PipelineRun | None = None
         self._task: asyncio.Task[None] | None = None
+        self._announcing = asyncio.Lock()
 
     @property
     def status(self) -> ItemStatus:
@@ -64,6 +73,11 @@ class Satellite:
             self._status = value
             self._on_status()
 
+    @property
+    def _device_conversation(self) -> str:
+        """The dialog of a device that sends no conversation id, which announcements also join."""
+        return f"device:{self.cfg.name}"
+
     async def start(self) -> None:
         await self._reconnect.start()
 
@@ -74,11 +88,13 @@ class Satellite:
 
     async def _on_connect(self) -> None:
         info = await self._client.device_info()
-        if problem := voice_support_problem(info, self._client.api_version):
+        features = voice_features(info, self._client.api_version)
+        if problem := voice_support_problem(features):
             self.status = ItemStatus(state="error", detail=problem)
             _log.error("[%s] %s: %s", self.cfg.name, info.name, problem)
             return
 
+        self._can_announce = bool(features & VoiceAssistantFeature.ANNOUNCE)
         self._unsubscribe = self._client.subscribe_voice_assistant(
             handle_start=self._handle_start,
             handle_stop=self._handle_stop,
@@ -111,7 +127,7 @@ class Satellite:
             return None
         # Firmware that does not echo the conversation id back (pulsar) would start every dialog from
         # scratch; keying by device keeps the history until conversation_ttl_s of silence, as ESPHome does.
-        conversation = conversation_id or f"device:{self.cfg.name}"
+        conversation = conversation_id or self._device_conversation
         run = PipelineRun(self._client, self.services, conversation, self.cfg.name, self.audio_base_url)
         self._run = run
         self._task = asyncio.create_task(run.run())
@@ -129,6 +145,51 @@ class Satellite:
             await self._cancel_run()
         elif self._run is not None:
             self._run.end_audio()
+
+    async def announce(self, instruction: str) -> bool:
+        """Runs instruction through the agent and has the device announce the answer.
+
+        False if the device is offline now; raises if it will never be able to announce.
+        """
+        async with self._announcing:
+            if self._unsubscribe is None or self.audio_base_url is None:
+                return False
+            if not self._can_announce:
+                raise RuntimeError(f"{self.cfg.name}: the firmware has no voice_assistant announce support")
+            # Waits for the dialog in progress instead of talking over it.
+            while (task := self._task) is not None and not task.done():
+                await asyncio.wait({task})
+
+            services = self.services
+            text = await services.agent.reply(self._device_conversation, instruction, self.cfg.name)
+            if not text:
+                _log.warning("[%s] the agent has nothing to announce", self.cfg.name)
+                return True
+
+            clip, url = services.clips.create(self.audio_base_url)
+
+            async def chunks() -> AsyncIterator[str]:
+                yield text
+
+            async def synthesize() -> None:
+                try:
+                    await services.tts.speak(chunks(), clip)
+                finally:
+                    await clip.close()
+
+            synthesis = asyncio.create_task(synthesize())
+            try:
+                if not await clip.wait_audio():
+                    raise RuntimeError("TTS produced no audio")
+                _log.info("[%s] announces %r from %s", self.cfg.name, text, url)
+                await self._client.send_voice_assistant_announcement_await_response(url, ANNOUNCE_TIMEOUT_S, text=text)
+            except APIConnectionError:
+                return False
+            except TimeoutError:
+                _log.warning("[%s] no end of the announcement within %d s", self.cfg.name, ANNOUNCE_TIMEOUT_S)
+            finally:
+                await synthesis
+            return True
 
     async def _cancel_run(self) -> None:
         # Awaited so the old run's RUN_END reaches the device before a new RUN_START.

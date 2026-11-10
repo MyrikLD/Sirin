@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sirin.agent import explain_connect_error, list_server_tools
 from sirin.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
 from sirin.oauth import OAuthManager
-from sirin.satellite import device_client, voice_support_problem
+from sirin.satellite import device_client, voice_features, voice_support_problem
 from sirin.speech import describe
 
 PROBE_TIMEOUT_S = 10.0
@@ -105,14 +105,14 @@ async def probe_device(cfg: DeviceConfig) -> ProbeResult:
     try:
         await client.connect(login=True)
         info = await client.device_info()
-        features = info.voice_assistant_feature_flags_compat(client.api_version) if client.api_version else 0
+        features = voice_features(info, client.api_version)
         details = [
             f"name: {info.friendly_name or info.name}",
             f"model: {info.manufacturer} {info.model}".strip(),
             f"ESPHome: {info.esphome_version}",
             "features: " + (", ".join(f.name.lower() for f in VoiceAssistantFeature if features & f) or "none"),
         ]
-        if problem := voice_support_problem(info, client.api_version):
+        if problem := voice_support_problem(features):
             return ProbeResult(ok=False, message=f"Connected, but {problem}", details=details)
         wake = await client.get_voice_assistant_configuration(timeout=5)
         if wake.available_wake_words:

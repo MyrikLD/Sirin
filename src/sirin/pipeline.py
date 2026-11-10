@@ -44,13 +44,13 @@ class PipelineRun:
     """
 
     def __init__(
-        self, client: APIClient, services: Services, conversation_id: str, log_name: str, audio_base_url: str
+        self, client: APIClient, services: Services, conversation_id: str, device: str, audio_base_url: str
     ) -> None:
         self._client = client
         self._audio_base_url = audio_base_url
         self._s = services
         self._conversation_id = conversation_id
-        self._log_name = log_name
+        self._device = device
         self._audio: asyncio.Queue[bytes | None] = asyncio.Queue()
 
     def feed(self, chunk: bytes) -> None:
@@ -66,10 +66,10 @@ class PipelineRun:
         try:
             await self._run(clip, url)
         except PipelineError as exc:
-            _log.warning("[%s] %s: %s", self._log_name, exc.code, exc)
+            _log.warning("[%s] %s: %s", self._device, exc.code, exc)
             self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": exc.code, "message": str(exc)})
         except Exception as exc:
-            _log.exception("[%s] pipeline failed", self._log_name)
+            _log.exception("[%s] pipeline failed", self._device)
             self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": "pipeline-error", "message": str(exc)[:200]})
         finally:
             await clip.close()
@@ -88,7 +88,7 @@ class PipelineRun:
 
         async def think() -> None:
             try:
-                async for delta in self._s.agent.stream_reply(self._conversation_id, text):
+                async for delta in self._s.agent.stream_reply(self._conversation_id, text, self._device):
                     answer.append(delta)
                     deltas.put_nowait(delta)
             finally:
@@ -106,7 +106,7 @@ class PipelineRun:
 
         async def start_playback() -> None:
             if await clip.wait_audio():
-                _log.info("[%s] the device plays the answer from %s", self._log_name, url)
+                _log.info("[%s] the device plays the answer from %s", self._device, url)
                 self._send(Ev.VOICE_ASSISTANT_INTENT_PROGRESS, {"tts_start_streaming": "1"})
 
         async def speak() -> None:
@@ -146,8 +146,8 @@ class PipelineRun:
             return await stt.finish()
 
     def _send(self, event: Ev, data: dict[str, str] | None = None) -> None:
-        _log.debug("[%s] -> %s %s", self._log_name, event.name, data or "")
+        _log.debug("[%s] -> %s %s", self._device, event.name, data or "")
         try:
             self._client.send_voice_assistant_event(event, data)
         except APIConnectionError:
-            _log.debug("[%s] device gone, %s dropped", self._log_name, event.name)
+            _log.debug("[%s] device gone, %s dropped", self._device, event.name)

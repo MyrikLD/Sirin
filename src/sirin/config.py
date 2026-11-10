@@ -90,8 +90,7 @@ class LLMConfig(BaseModel):
             "in one or two sentences, without markdown or lists: the reply is spoken aloud. "
             "Use the tools for actions and data."
         ),
-        description="System prompt; a Jinja template rendered before each request, e.g. "
-        '{{ now().strftime("%H:%M, %d.%m.%Y") }}',
+        description="System prompt; a Jinja template rendered before each request",
     )
     temperature: float = 0.3
     conversation_ttl_s: int = Field(default=300, description="Idle time after which dialog history is dropped")

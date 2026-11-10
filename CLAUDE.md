@@ -26,8 +26,8 @@ CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check an
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
 Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
-MCP isolation, partial rebuild, settings API). Tests need network once: `conftest.py` downloads the VAD model into
-the pytest cache.
+MCP isolation, partial rebuild, settings API, reminder scheduling and tools). Tests need network once: `conftest.py`
+downloads the VAD model into the pytest cache.
 
 The settings page at `http://<host>:8765/` stores config in `data/settings.json` (git-ignored); process-level config
 comes from `SIRIN_*` env vars or `.env` (`AppSettings`).
@@ -76,6 +76,14 @@ Request flow for one utterance:
   servers only through `build_toolset()` / `list_server_tools()`.
 - Tools are prefixed `<server>_`. A server that fails to connect is skipped and reported in
   `tool_status`, not raised.
+
+Reminders (`reminders.py`): built-in agent tools (`reminder_tools()`, passed to `Agent` with no prefix) read the
+device from `TurnDeps`, the pydantic-ai deps of every run. The LLM writes a prompt for itself; `Reminders` (owned by
+`Runtime`, so it outlives agent rebuilds) keeps them in `data/reminders.json` and at the due time calls
+`Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the `device:<name>`
+conversation, TTS writes a `LiveClip`, and the device plays it via the voice_assistant announce API (`ANNOUNCE`
+feature). An offline device is retried for up to `GRACE`; reminders missed while the service was down are dropped at
+start. Times are the process's local zone.
 
 Status (`status.py`): `Status.items[<settings list>][<item name>]` is an `ItemStatus` (`ok | pending | error` +
 `detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current, including an MCP connection

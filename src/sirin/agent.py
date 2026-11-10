@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable
 import httpx2
 from mcp.client.auth import OAuthClientProvider
 from mcp.types import Tool
+from pydantic import BaseModel
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
     AgentRunResultEvent,
@@ -38,6 +39,12 @@ MAX_TOOL_ROUNDS = 8
 LLM_TIMEOUT_S = 60
 
 
+class TurnDeps(BaseModel):
+    """Who the agent is answering; tools that act on the device read it."""
+
+    device: str
+
+
 class Agent:
     """LLM with MCP tools; streams the spoken part of the answer as text deltas."""
 
@@ -47,29 +54,35 @@ class Agent:
         mcp_servers: list[McpServerConfig],
         oauth: OAuthManager,
         on_status: Callable[[], None],
+        builtin_tools: list[AbstractToolset[TurnDeps]],
     ) -> None:
         self._cfg = cfg
         self._on_status = on_status
         self._prompt = compile_prompt(cfg.system_prompt)
         self._oauth = oauth
         self._mcp_servers = mcp_servers
+        self._builtin_tools = builtin_tools
         self._history: dict[str, tuple[float, list[ModelMessage]]] = {}
         self._connected: list[IsolatedToolset] = []
-        self._agent: PydanticAgent[None, str] | None = None
+        self._agent: PydanticAgent[TurnDeps, str] | None = None
         self.tool_status: dict[str, ItemStatus] = {}
 
     async def start(self) -> None:
         # All servers connect at once, so startup waits for the slowest one rather than their sum.
         results = await asyncio.gather(*(self._connect(server) for server in self._mcp_servers))
-        toolsets: list[AbstractToolset[None]] = [
-            toolset.prefixed(server.name)
-            for server, toolset in zip(self._mcp_servers, results, strict=True)
-            if toolset is not None
+        toolsets: list[AbstractToolset[TurnDeps]] = [
+            *self._builtin_tools,
+            *(
+                toolset.prefixed(server.name)
+                for server, toolset in zip(self._mcp_servers, results, strict=True)
+                if toolset is not None
+            ),
         ]
 
         provider = OpenAICompatibleProvider("local", base_url=self._cfg.base_url, api_key=self._cfg.api_key or "none")
         self._agent = PydanticAgent(
             OpenAIChatModel(self._cfg.model, provider=provider),
+            deps_type=TurnDeps,
             instructions=self._render_prompt,
             toolsets=toolsets,
             model_settings=ModelSettings(temperature=self._cfg.temperature, timeout=LLM_TIMEOUT_S),
@@ -107,13 +120,18 @@ class Agent:
     async def close(self) -> None:
         await asyncio.gather(*(toolset.__aexit__(None, None, None) for toolset in self._connected))
 
-    async def stream_reply(self, conversation_id: str, text: str) -> AsyncIterator[str]:
+    async def reply(self, conversation_id: str, text: str, device: str) -> str:
+        """The whole answer at once, for speech nobody is waiting on."""
+        return "".join([delta async for delta in self.stream_reply(conversation_id, text, device)]).strip()
+
+    async def stream_reply(self, conversation_id: str, text: str, device: str) -> AsyncIterator[str]:
         if self._agent is None:
             raise RuntimeError("Agent.start() was not called")
 
         async with self._agent.run_stream_events(
             text,
             message_history=self._messages(conversation_id),
+            deps=TurnDeps(device=device),
             usage_limits=UsageLimits(request_limit=MAX_TOOL_ROUNDS + 1),
         ) as events:
             async for event in events:

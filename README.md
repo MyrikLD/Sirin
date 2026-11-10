@@ -61,6 +61,7 @@ MCP servers can use OAuth: turn on `oauth`, save, and press **Authorize**. The p
 
 - ESPHome with `voice_assistant` and audio over the API (any recent firmware).
 - A `media_player` on the device: the answer is played from a URL on this service.
+- For reminders, firmware with `voice_assistant` announce support (the `ANNOUNCE` feature flag).
 - Only one client can hold the voice subscription. If the device is also added to HA, disable its Assist pipeline in HA or remove the device from the ESPHome integration.
 
 ## How it works
@@ -73,3 +74,9 @@ Every stage streams:
   tts_start_streaming=1` follows the first audio. The device downloads the WAV while it is still being synthesized.
 
 Dialog history is kept per device `conversation_id` for `conversation_ttl_s` seconds. MCP tools are exposed to the LLM with a `<server>_` prefix. A server that is down at startup is skipped.
+
+### Reminders
+
+The agent has built-in tools `set_reminder`, `list_reminders` and `cancel_reminder` ("remind me to turn off the stove in 10 minutes", "remind me tomorrow to eat"). When it sets a reminder, the LLM writes a note to itself. At the due time the agent runs that note, with all its tools, and the device that set the reminder announces the answer. Reminders are kept in `data/reminders.json` and survive a restart. If the device is offline, the reminder is retried every 30 s for up to an hour, then dropped. Reminders that came due while the service was down are dropped at startup.
+
+Times are in the process's local time zone, the same one `now()` in the system prompt uses. In the container, set it with `TZ` (see `docker-compose.yml`).
