@@ -122,6 +122,7 @@ class Satellite:
         audio_settings: VoiceAssistantAudioSettings,
         wake_word_phrase: str | None,
     ) -> int | None:
+        previous = self._run
         await self._cancel_run()
         _log.info("[%s] pipeline start, wake word %r", self.cfg.name, wake_word_phrase)
         if self.audio_base_url is None:
@@ -129,7 +130,14 @@ class Satellite:
         # Firmware that does not echo the conversation id back (pulsar) would start every dialog from
         # scratch; keying by device keeps the history until conversation_ttl_s of silence, as ESPHome does.
         conversation = conversation_id or self._device_conversation
-        run = PipelineRun(self._client, self.services, conversation, self.cfg.name, self.audio_base_url)
+        run = PipelineRun(
+            self._client,
+            self.services,
+            conversation,
+            self.cfg.name,
+            self.audio_base_url,
+            answers_question=previous is not None and previous.awaits_reply,
+        )
         self._run = run
         self._task = asyncio.create_task(run.run())
         # Port 0 tells the device to stream audio over the API connection instead of UDP.

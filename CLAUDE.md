@@ -26,8 +26,9 @@ CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check an
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
 Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
-MCP isolation and reconnect, history cap, partial rebuild, settings API, reminder scheduling and tools). Tests need network once: `conftest.py`
-downloads the VAD model into the pytest cache.
+MCP isolation and reconnect, history cap, spoken error reply, follow-up after a question, partial rebuild, settings
+API, reminder scheduling and tools). Tests need network once: `conftest.py` downloads the VAD model into the pytest
+cache.
 
 The settings page at `http://<host>:8765/` stores config in `data/settings.json` (git-ignored); process-level config
 comes from `SIRIN_*` env vars or `.env` (`AppSettings`).
@@ -62,6 +63,12 @@ Request flow for one utterance:
 4. `think()` / `speak()` / `start_playback()` run concurrently in a `TaskGroup`: agent text deltas flow through a
    queue into `TextToSpeech.speak()`, which writes PCM into the `LiveClip`; once the first audio exists,
    `INTENT_PROGRESS tts_start_streaming=1` tells the device to start downloading.
+   `INTENT_END` carries `continue_conversation=1` when the answer ends with a question mark (HA's rule), so the
+   device listens for the reply without the wake word. `Satellite` passes `answers_question` to that next run; if
+   it hears nothing, the agent gets `SILENCE` as the user's turn instead of the run failing, and that turn never
+   sets `continue_conversation`.
+   If the agent raises, `think()` feeds `llm.error_reply` into the same queue and the run ends as a normal answer
+   (no `ERROR` event, which would send the device to idle); with an empty `error_reply` the exception propagates.
 5. `GET /tts/{id}.wav` (`web/routers/tts.py`) streams the `LiveClip` with unknown-length WAV headers while it is
    still being written. `ClipStore.base_url_for()` picks the URL host as the local IP routed toward that device
    unless `SIRIN_PUBLIC_URL` is set.

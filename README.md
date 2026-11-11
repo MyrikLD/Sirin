@@ -72,6 +72,10 @@ Every stage streams:
 - **TTS → device.** The answer URL is sent in `RUN_START`, and `INTENT_PROGRESS
   tts_start_streaming=1` follows the first audio. The device downloads the WAV while it is still being synthesized.
 
+If the model fails (unreachable, timeout, too many tool rounds), the device says `llm.error_reply` instead of the answer; write it in the language you speak. With an empty `error_reply` the device gets an error event, as it does for STT and TTS failures.
+
+When the answer ends with a question, the device listens again right after it, without the wake word (`continue_conversation`, the same rule Home Assistant uses). If nobody replies, the model is told that the user did not answer and decides what to say or do; the device does not listen again after that turn. To stop a model that ends every answer with a question, say so in the system prompt.
+
 Dialog history is kept per device `conversation_id` for `conversation_ttl_s` seconds. MCP tools are exposed to the LLM with a `<server>_` prefix. A server that is down or loses its connection is skipped and tried again every few seconds, up to once a minute, until it answers.
 
 ### Reminders

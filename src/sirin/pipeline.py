@@ -17,6 +17,8 @@ _log = logging.getLogger(__name__)
 
 # The satellite sends audio every ~32 ms; a longer gap means it stopped streaming.
 AUDIO_GAP_TIMEOUT_S = 3.0
+# What the agent gets as the user's turn when its question was met with silence.
+SILENCE = "(The user did not answer.)"
 
 
 @dataclass(frozen=True)
@@ -43,13 +45,23 @@ class PipelineRun:
     """
 
     def __init__(
-        self, client: APIClient, services: Services, conversation_id: str, device: str, audio_base_url: str
+        self,
+        client: APIClient,
+        services: Services,
+        conversation_id: str,
+        device: str,
+        audio_base_url: str,
+        answers_question: bool = False,
     ) -> None:
+        """answers_question: the device listens because the previous answer ended with a question."""
         self._client = client
         self._audio_base_url = audio_base_url
         self._s = services
         self._conversation_id = conversation_id
         self._device = device
+        self._answers_question = answers_question
+        # Set once the answer asks the user something, so the device listens again without the wake word.
+        self.awaits_reply = False
         self._audio: asyncio.Queue[bytes | None] = asyncio.Queue()
 
     def feed(self, chunk: bytes) -> None:
@@ -81,27 +93,48 @@ class PipelineRun:
 
     async def _run(self, clip: LiveClip, url: str) -> None:
         self._send(Ev.VOICE_ASSISTANT_STT_START)
-        text = await self._listen()
-        if not text:
+        heard = await self._listen()
+        if heard:
+            self._send(Ev.VOICE_ASSISTANT_STT_END, {"text": heard})
+        elif not self._answers_question:
             raise PipelineError("stt-no-text-recognized", "No text recognized")
-        self._send(Ev.VOICE_ASSISTANT_STT_END, {"text": text})
+        # Silence after a question is an answer too: the agent decides what follows from it.
+        text = heard or SILENCE
 
         self._send(Ev.VOICE_ASSISTANT_INTENT_START)
         deltas: asyncio.Queue[str | None] = asyncio.Queue()
         answer: list[str] = []
 
+        def say(delta: str) -> None:
+            answer.append(delta)
+            deltas.put_nowait(delta)
+
         async def think() -> None:
             try:
                 async for delta in self._s.agent.stream_reply(self._conversation_id, text, self._device):
-                    answer.append(delta)
-                    deltas.put_nowait(delta)
+                    say(delta)
+            except Exception:
+                if not self._s.agent.error_reply:
+                    raise
+                _log.exception("[%s] the agent failed, the device says the error reply", self._device)
+                # The newline ends whatever sentence the failure interrupted.
+                say("\n")
+                say(self._s.agent.error_reply)
             finally:
                 deltas.put_nowait(None)
+            spoken = re.sub(r"\s+", " ", "".join(answer)).strip()
+            # As in Home Assistant: after an answer that ends with a question the device listens again
+            # without the wake word. A question that follows silence is not waited on, or an empty room
+            # would be asked forever.
+            self.awaits_reply = bool(heard) and spoken.endswith(("?", "？"))
             self._send(
                 Ev.VOICE_ASSISTANT_INTENT_END,
-                {"conversation_id": self._conversation_id, "continue_conversation": "0"},
+                {
+                    "conversation_id": self._conversation_id,
+                    "continue_conversation": "1" if self.awaits_reply else "0",
+                },
             )
-            if spoken := re.sub(r"\s+", " ", "".join(answer)).strip():
+            if spoken:
                 self._send(Ev.VOICE_ASSISTANT_TTS_START, {"text": spoken})
 
         async def text_stream() -> AsyncIterator[str]:
@@ -122,6 +155,7 @@ class PipelineRun:
             self._send(Ev.VOICE_ASSISTANT_TTS_END, {"url": url})
 
     async def _listen(self) -> str:
+        """The recognized text; empty when a question was met with silence."""
         endpointer = Endpointer(self._s.vad, self._s.vad_model)
         async with self._s.stt.stream() as stt:
             while True:
@@ -138,10 +172,10 @@ class PipelineRun:
                 elif event in (VadEvent.SPEECH_END, VadEvent.TIMEOUT):
                     break
 
-            if not endpointer.heard_speech:
+            if not endpointer.heard_speech and not self._answers_question:
                 raise PipelineError("stt-no-text-recognized", "No speech detected")
             self._send(Ev.VOICE_ASSISTANT_STT_VAD_END)
-            return await stt.finish()
+            return await stt.finish() if endpointer.heard_speech else ""
 
     def _send(self, event: Ev, data: dict[str, str] | None = None) -> None:
         _log.debug("[%s] -> %s %s", self._device, event.name, data or "")

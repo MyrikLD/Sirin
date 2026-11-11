@@ -64,6 +64,7 @@ class Agent:
         builtin_tools: list[AbstractToolset[TurnDeps]],
     ) -> None:
         self._cfg = cfg
+        self.error_reply = cfg.error_reply
         self._on_status = on_status
         self._prompt = compile_prompt(cfg.system_prompt)
         self._oauth = oauth

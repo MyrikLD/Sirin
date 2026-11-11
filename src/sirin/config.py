@@ -92,6 +92,10 @@ class LLMConfig(BaseModel):
         ),
         description="System prompt; a Jinja template rendered before each request",
     )
+    error_reply: str = Field(
+        default="Sorry, something went wrong. Please try again.",
+        description="Spoken when the model fails; when empty, the device signals an error instead",
+    )
     temperature: float = 0.3
     conversation_ttl_s: int = Field(default=300, description="Idle time after which dialog history is dropped")
 
