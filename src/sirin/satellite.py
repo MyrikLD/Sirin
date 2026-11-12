@@ -13,6 +13,7 @@ from aioesphomeapi import (
     VoiceAssistantFeature,
 )
 
+from sirin.agent import TurnDeps
 from sirin.config import DeviceConfig
 from sirin.pipeline import PipelineRun, Services
 from sirin.status import ItemStatus
@@ -170,7 +171,7 @@ class Satellite:
                 await asyncio.wait({task})
 
             services = self.services
-            text = await services.agent.reply(self._device_conversation, instruction, self.cfg.name)
+            text = await services.agent.reply(self._device_conversation, instruction, TurnDeps(device=self.cfg.name))
             if not text:
                 _log.warning("[%s] the agent has nothing to announce", self.cfg.name)
                 return True

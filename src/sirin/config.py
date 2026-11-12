@@ -35,6 +35,11 @@ class AppSettings(BaseSettings):
     audio_ttl_s: int = Field(default=300, description="How long a finished answer stays downloadable")
     data_dir: Path = Field(default=Path("data"), description="Where the settings page stores its settings")
     vad_model: Path = Field(default=Path("models/silero_vad.onnx"), description="Silero VAD ONNX model file")
+    voice_models: Path = Field(
+        default=Path("models/voices"),
+        description="Directory with speaker.onnx, enroll.onnx and chunk.onnx; voices are recognized and isolated "
+        "when it exists",
+    )
 
 
 class DeviceConfig(BaseModel):

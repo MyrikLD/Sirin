@@ -29,7 +29,20 @@ echo "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3  models/s
 sirin   # -v logs protocol events
 ```
 
-The Docker image already contains the VAD model.
+The Docker image already contains the VAD model and the voice models. To recognize voices without Docker, download the voice models too; without them Sirin runs as before and logs that voices are not recognized:
+
+```sh
+voxlock=https://huggingface.co/arbazsiddiqui/voxlock/resolve/2413b292bc2c337bfc19a9802aaf3e011e68e9c4/onnx/v2
+curl -fL --create-dirs -o models/voices/speaker.onnx \
+  https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx
+curl -fL -o models/voices/enroll.onnx $voxlock/enroll.onnx
+curl -fL -o models/voices/chunk.onnx $voxlock/chunk_int8.onnx
+sha256sum -c <<EOF
+e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012  models/voices/speaker.onnx
+81f305c9b7a32f13d1401f53bb4c6301826a607c9e807e60912f36ef1b9fae29  models/voices/enroll.onnx
+c50ffdc8d723fd4f91cb08889f3d0143491f95967b705f35c444a0b4afe88172  models/voices/chunk.onnx
+EOF
+```
 
 Or with Docker:
 
@@ -51,6 +64,7 @@ Environment variables (or `.env`):
 | `SIRIN_AUDIO_TTL_S`         | `300`                                                                 | How long a finished answer stays downloadable                                |
 | `SIRIN_DATA_DIR`            | `data`                                                                | Where the settings page stores its settings                                  |
 | `SIRIN_VAD_MODEL`           | `models/silero_vad.onnx`                                              | Silero VAD ONNX model file                                                   |
+| `SIRIN_VOICE_MODELS`        | `models/voices`                                                       | Directory with `speaker.onnx`, `enroll.onnx` and `chunk.onnx`; voices are recognized when it exists |
 
 The settings page has no login. Keep the port reachable only from a trusted network.
 
@@ -77,6 +91,20 @@ If the model fails (unreachable, timeout, too many tool rounds), the device says
 When the answer ends with a question, the device listens again right after it, without the wake word (`continue_conversation`, the same rule Home Assistant uses). If nobody replies, the model is told that the user did not answer and decides what to say or do; the device does not listen again after that turn. To stop a model that ends every answer with a question, say so in the system prompt.
 
 Dialog history is kept per device `conversation_id` for `conversation_ttl_s` seconds. MCP tools are exposed to the LLM with a `<server>_` prefix. A server that is down or loses its connection is skipped and tried again every few seconds, up to once a minute, until it answers.
+
+### Voices
+
+With the voice models in place, the agent has the tools `remember_voice`, `forget_voice` and `known_voices`. Say "remember my voice, I am Anna" in a phrase with at least 3 seconds of speech; if it was shorter, the assistant asks for a longer one. Voices are kept in `data/voices/`: `voices.json` with the names and the embeddings that tell who speaks, and for each voice a WAV file with the 3-second sample that the isolation network needs. You can listen to a sample to check what was recorded.
+
+For each utterance Sirin compares the first 1.5 seconds of speech with the remembered voices. If it is one of them, the user's turn reaches the LLM tagged with the name (`[Voice: Anna] ...`, or `[Voice: not recognized]` for any other voice), and from that speech on the audio goes through a target-speaker network (VoxLock) that keeps only that voice. Each isolated stretch of speech is then compared with the voice again and muted when it is somebody else, so another person or a TV that talks on after the command neither adds words to it nor keeps the device listening. A voice that is not remembered is recognized as before, unchanged.
+
+Limits:
+
+- The audio starts after the wake word, so the voice is taken from the first speech after it, not from the wake word itself.
+- A command shorter than about a second is often too short to tell the voice; it is then recognized unchanged.
+- If another voice is as loud as the speaker and talks at the same time, the network can keep the wrong one. That stretch is muted and the command is lost or cut.
+- It is a convenience, not access control: a recording of a voice passes as that voice.
+- Isolation takes about a quarter of one CPU core while a remembered voice speaks.
 
 ### Reminders
 

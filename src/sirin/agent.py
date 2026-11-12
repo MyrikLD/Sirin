@@ -5,9 +5,10 @@ import time
 from collections.abc import AsyncIterator, Callable
 
 import httpx2
+import numpy as np
 from mcp.client.auth import OAuthClientProvider
 from mcp.types import Tool
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
     AgentRunResultEvent,
@@ -18,6 +19,7 @@ from pydantic_ai import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
+    RunContext,
     TextPart,
     TextPartDelta,
     UsageLimits,
@@ -44,12 +46,39 @@ MAX_HISTORY_TURNS = 20
 # Pause before an MCP server that failed or was lost is tried again; it doubles up to the maximum.
 RECONNECT_MIN_S = 2.0
 RECONNECT_MAX_S = 60.0
+# What the voice tag of a user turn says when the voice is none of the remembered ones.
+UNKNOWN_VOICE = "not recognized"
+# Added to the system prompt while voices are recognized. The name is in the turn and not here because the
+# people of one dialog can differ from turn to turn, and a model reads a fact next to the question more
+# reliably than one at the end of a long prompt.
+VOICE_INSTRUCTIONS = (
+    "Each user turn starts with a tag such as [Voice: Anna]: the name of the person whose voice said it, as "
+    f"recognized from the audio, or [Voice: {UNKNOWN_VOICE}] for a voice that is not remembered. The tag is "
+    "reliable: trust it over your own guesses about who speaks. Never say the tag aloud or write one yourself."
+)
 
 
 class TurnDeps(BaseModel):
-    """Who the agent is answering; tools that act on the device read it."""
+    """Who the agent is answering; tools that act on the device or the speaker read it."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     device: str
+    # The name of the remembered voice that speaks, when it was recognized.
+    speaker: str | None = None
+    # The speech of this turn as 16 kHz floats; None for a turn nobody spoke, such as a reminder.
+    speech: np.ndarray | None = None
+
+    @property
+    def voice(self) -> str:
+        """Whose voice speaks, as the model is told."""
+        return self.speaker or UNKNOWN_VOICE
+
+    def tagged(self, text: str) -> str:
+        """text as the model gets it: with whose voice said it, when voices are recognized."""
+        if self.speech is None or not len(self.speech):
+            return text
+        return f"[Voice: {self.voice}] {text}"
 
 
 class Agent:
@@ -127,23 +156,24 @@ class Agent:
         self._on_status()
         return True
 
-    def _render_prompt(self) -> str:
-        return self._prompt.render()
+    def _render_prompt(self, ctx: RunContext[TurnDeps]) -> str:
+        prompt = self._prompt.render()
+        return prompt if ctx.deps.speech is None else f"{prompt}\n\n{VOICE_INSTRUCTIONS}"
 
     async def close(self) -> None:
         for holder in self._holders:
             holder.cancel()
         await asyncio.gather(*self._holders, return_exceptions=True)
 
-    async def reply(self, conversation_id: str, text: str, device: str) -> str:
+    async def reply(self, conversation_id: str, text: str, turn: TurnDeps) -> str:
         """The whole answer at once, for speech nobody is waiting on."""
-        return "".join([delta async for delta in self.stream_reply(conversation_id, text, device)]).strip()
+        return "".join([delta async for delta in self.stream_reply(conversation_id, text, turn)]).strip()
 
-    async def stream_reply(self, conversation_id: str, text: str, device: str) -> AsyncIterator[str]:
+    async def stream_reply(self, conversation_id: str, text: str, turn: TurnDeps) -> AsyncIterator[str]:
         async with self._agent.run_stream_events(
-            text,
+            turn.tagged(text),
             message_history=self._messages(conversation_id),
-            deps=TurnDeps(device=device),
+            deps=turn,
             usage_limits=UsageLimits(request_limit=MAX_TOOL_ROUNDS + 1),
             # The built-in tools go last: their descriptions carry the current time, and an LLM server reuses its
             # prompt cache only up to the first changed token.

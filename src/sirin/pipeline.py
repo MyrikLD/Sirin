@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from aioesphomeapi import APIClient, APIConnectionError
 from aioesphomeapi import VoiceAssistantEventType as Ev
 
-from sirin.agent import Agent
+from sirin.agent import Agent, TurnDeps
 from sirin.clips import ClipStore, LiveClip
 from sirin.config import VadConfig
 from sirin.speech import SpeechToText, TextToSpeech
-from sirin.vad import Endpointer, SileroModel, VadEvent
+from sirin.vad import SAMPLE_RATE, Endpointer, SileroModel, VadEvent
+from sirin.voices import SpeakerGate, Voices
 
 _log = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ class Services:
     clips: ClipStore
     vad: VadConfig
     vad_model: SileroModel
+    # None when the voice models are not installed: nobody is recognized and all audio is recognized as it comes.
+    voices: Voices | None = None
 
 
 class PipelineError(Exception):
@@ -63,6 +66,7 @@ class PipelineRun:
         # Set once the answer asks the user something, so the device listens again without the wake word.
         self.awaits_reply = False
         self._audio: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._turn = TurnDeps(device=device)
 
     def feed(self, chunk: bytes) -> None:
         self._audio.put_nowait(chunk)
@@ -111,7 +115,7 @@ class PipelineRun:
 
         async def think() -> None:
             try:
-                async for delta in self._s.agent.stream_reply(self._conversation_id, text, self._device):
+                async for delta in self._s.agent.stream_reply(self._conversation_id, text, self._turn):
                     say(delta)
             except Exception:
                 if not self._s.agent.error_reply:
@@ -157,21 +161,48 @@ class PipelineRun:
     async def _listen(self) -> str:
         """The recognized text; empty when a question was met with silence."""
         endpointer = Endpointer(self._s.vad, self._s.vad_model)
+        gate = SpeakerGate(self._s.voices, self._s.vad_model) if self._s.voices is not None else None
         async with self._s.stt.stream() as stt:
+
+            async def hear(audio: bytes) -> bool:
+                """True once the utterance is over."""
+                if not audio:
+                    return False
+                await stt.send(audio)
+                event = endpointer.feed(audio)
+                if event is VadEvent.SPEECH_START:
+                    self._send(Ev.VOICE_ASSISTANT_STT_VAD_START)
+                return event in (VadEvent.SPEECH_END, VadEvent.TIMEOUT)
+
             while True:
                 try:
                     chunk = await asyncio.wait_for(self._audio.get(), AUDIO_GAP_TIMEOUT_S)
                 except TimeoutError:
                     chunk = None
                 if chunk is None:
+                    if gate is not None:
+                        await hear(await asyncio.to_thread(gate.finish))
                     break
-                await stt.send(chunk)
-                event = endpointer.feed(chunk)
-                if event is VadEvent.SPEECH_START:
-                    self._send(Ev.VOICE_ASSISTANT_STT_VAD_START)
-                elif event in (VadEvent.SPEECH_END, VadEvent.TIMEOUT):
+                # The networks behind the gate take a good part of real time; a thread keeps the event loop free.
+                if await hear(await asyncio.to_thread(gate.feed, chunk) if gate is not None else chunk):
                     break
 
+            if gate is not None:
+                self._turn = TurnDeps(device=self._device, speaker=gate.speaker, speech=gate.speech)
+                seconds = len(gate.speech) / SAMPLE_RATE
+                if gate.closest is None:
+                    _log.info("[%s] the voice was not compared: %.1f s of speech", self._device, seconds)
+                else:
+                    name, score, ms = gate.closest
+                    verdict = f"is {name}" if gate.speaker else f"is not recognized, the closest is {name}"
+                    _log.info(
+                        "[%s] the voice %s (similarity %.2f on %.1f s; %.1f s of speech in all)",
+                        self._device,
+                        verdict,
+                        score,
+                        ms / 1000,
+                        seconds,
+                    )
             if not endpointer.heard_speech and not self._answers_question:
                 raise PipelineError("stt-no-text-recognized", "No speech detected")
             self._send(Ev.VOICE_ASSISTANT_STT_VAD_END)

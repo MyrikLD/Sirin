@@ -26,6 +26,7 @@ CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check an
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
 Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
+the speaker gate and voice store with fake models,
 MCP isolation and reconnect, history cap, spoken error reply, follow-up after a question, partial rebuild, settings
 API, reminder scheduling and tools). Tests need network once: `conftest.py` downloads the VAD model into the pytest
 cache.
@@ -98,6 +99,24 @@ feature). An offline device is retried for up to `GRACE`; reminders missed while
 start. A recurring reminder has a cron `schedule` (`cronsim`, read in local wall time by `cron_next()`) and an optional
 `until`; it keeps its id and its one task: after each occurrence (announced or dropped) `_run` moves `due` to the next
 time, and at start a missed one moves forward instead of being dropped. Times are the process's local zone.
+
+Voices (`voices.py`), on only when the `SIRIN_VOICE_MODELS` directory (default `models/voices`) exists; `Runtime` logs
+at start which it is. The Dockerfile adds the three ONNX files, pinned and SHA-256 checked; a directory with a missing
+file fails at start:
+- `SpeakerModel` is WeSpeaker ResNet34 on Kaldi filter bank features computed in `fbank()`; `Isolator` /
+  `IsolatedStream` run the VoxLock target-speaker network (`enroll.onnx` turns a 3 s sample into a voiceprint of
+  about 10 MB, `chunk.onnx` streams). The voiceprint is not a speaker vector, so both models are needed.
+- `Voices` (owned by `Runtime`, like `Reminders`) keeps the voices in `data/voices/`: `voices.json` with each name and
+  embedding, and one WAV file per voice with the 3 s sample; voiceprints are computed from the sample on first use
+  and cached.
+- `SpeakerGate` sits in `_listen()` between the microphone and both the endpointer and the STT, one per utterance,
+  run with `asyncio.to_thread`. It holds each run of speech until it can be judged: before a lock it identifies
+  the run (`MATCH_THRESHOLD`), after a lock it verifies each isolated run (`KEEP_THRESHOLD`) and mutes the ones in
+  another voice. The verification is required: with its voice absent the network lets another voice through.
+  The thresholds come from measurements on clean recordings and are constants.
+- `PipelineRun` passes the speaker and the turn's speech to the agent in `TurnDeps`; `TurnDeps.tagged()` puts
+  the name in front of the user turn (`[Voice: Anna]`) and `Agent._render_prompt` explains the tag, and `voice_tools()` (`remember_voice`, `forget_voice`, `known_voices`)
+  enrolls from `TurnDeps.speech`.
 
 Status (`status.py`): `Status.items[<settings list>][<item name>]` is an `ItemStatus` (`ok | pending | error` +
 `detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current, including an MCP connection

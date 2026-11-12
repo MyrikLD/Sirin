@@ -32,4 +32,11 @@ def vad_model(vad_model_path) -> SileroModel:
 @pytest.fixture
 def app_settings(tmp_path, vad_model_path) -> AppSettings:
     # Explicit values win over SIRIN_* variables and .env of the machine running the tests.
-    return AppSettings(host="127.0.0.1", port=8765, public_url=None, data_dir=tmp_path, vad_model=vad_model_path)
+    return AppSettings(
+        host="127.0.0.1",
+        port=8765,
+        public_url=None,
+        data_dir=tmp_path,
+        vad_model=vad_model_path,
+        voice_models=tmp_path / "voices",
+    )

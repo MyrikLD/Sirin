@@ -21,7 +21,7 @@ class _Agent:
         self._fails = fails
         self.heard: list[str] = []
 
-    async def stream_reply(self, conversation_id: str, text: str, device: str):
+    async def stream_reply(self, conversation_id: str, text: str, turn):
         self.heard.append(text)
         yield self._answer
         if self._fails:
