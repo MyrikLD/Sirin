@@ -15,12 +15,14 @@
     <div id="extra"></div>
   </div>
   <div id="history-view" hidden></div>
+  <div id="voices-view" hidden></div>
 </main>
 <div class="bar" id="bar" hidden><div><button class="primary" id="save">Save and apply</button><span id="msg"></span></div></div>
 <script type="module">
 import { api, el } from "./lib.js";
 import { accountBar, peopleCard } from "./account.js";
 import { historyView } from "./history.js";
+import { voicesView } from "./voices.js";
 
 // The form is rendered from the RuntimeSettings JSON schema and its x- extensions (see config.py):
 // x-choices (dropdown), x-probe (Test button endpoint), x-authorize (Authorize button endpoint),
@@ -269,15 +271,17 @@ function showTabs(views) {
 (async () => {
   const me = await api("/api/auth/me");
   document.getElementById("account").replaceChildren(accountBar(me));
-  document.getElementById("history-view").replaceChildren(historyView());
+  document.getElementById("history-view").replaceChildren(historyView(me));
+  document.getElementById("voices-view").replaceChildren(voicesView(me));
   if (me.role !== "admin") {
-    showTabs([{ id: "history", title: "History" }]);
+    showTabs([{ id: "history", title: "History" }, { id: "voices", title: "Voices" }]);
     return;
   }
   const bar = document.getElementById("bar");
   showTabs([
     { id: "settings", title: "Settings", onShow: (shown) => { bar.hidden = !shown; } },
     { id: "history", title: "History" },
+    { id: "voices", title: "Voices" },
   ]);
   document.getElementById("extra").replaceChildren(peopleCard(me));
   schema = await api("/api/settings/schema");

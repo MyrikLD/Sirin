@@ -3,8 +3,10 @@ from datetime import UTC, datetime
 
 import httpx2
 import pytest
+import sqlalchemy as sa
 
 from sirin.accounts import FIRST_ADMIN_LOGIN, reset_password
+from sirin.tables import Voice
 from sirin.web import create_app
 
 
@@ -114,7 +116,7 @@ async def test_the_last_admin_stays(client):
 
 
 async def test_history_is_read_by_anyone_logged_in(app, client):
-    await app.state.runtime.history.open_turn("kitchen", "c", datetime.now(UTC), "hello", 0.2, 1500)
+    await app.state.runtime.history.open_turn("kitchen", "c", datetime.now(UTC), None, "hello", 0.2, 1500)
     member = {"login": "anna", "name": "Anna", "password": "x"}
     assert (await client.post("/api/users", json=member)).status_code == 201
 
@@ -125,3 +127,43 @@ async def test_history_is_read_by_anyone_logged_in(app, client):
         assert (turn["text"], turn["answer"]) == ("hello", None)
         assert (await anna.get("/api/history", params={"device": "hall"})).json() == []
         assert (await anna.get("/api/history/devices")).json() == ["kitchen"]
+
+
+async def test_a_member_sees_their_turns_and_unclaimed_ones(app, client):
+    db = app.state.runtime.db
+    for login in ("anna", "boris"):
+        assert (
+            await client.post("/api/users", json={"login": login, "name": login.title(), "password": "x"})
+        ).status_code == 201
+    async with db.session() as session, session.begin():
+        voices = (
+            (
+                await session.execute(
+                    sa.insert(Voice).returning(Voice.id),
+                    [{"embedding": b"\0" * 8, "created_at": datetime.now(UTC)} for _ in range(2)],
+                )
+            )
+            .scalars()
+            .all()
+        )
+    history = app.state.runtime.history
+    anna_turn = await history.open_turn("kitchen", "c", datetime.now(UTC), voices[0], "anna speaks", None, None)
+    boris_turn = await history.open_turn("kitchen", "c", datetime.now(UTC), voices[1], "boris speaks", None, None)
+    nobody = await history.open_turn("kitchen", "c", datetime.now(UTC), None, "short", None, None)
+
+    async with _logged_in(app, "anna", "x") as anna, _logged_in(app, "boris", "x") as boris:
+        assert (await anna.post(f"/api/history/{anna_turn}/mine")).status_code == 204
+        assert (await boris.post(f"/api/history/{anna_turn}/mine")).status_code == 403
+        assert (await boris.post(f"/api/history/{nobody}/mine")).status_code == 404
+        assert (await boris.delete(f"/api/voices/{voices[1]}")).status_code == 403
+
+        seen = {t["id"]: t for t in (await anna.get("/api/history")).json()}
+        assert set(seen) == {anna_turn, boris_turn, nobody}
+        assert seen[anna_turn]["person_name"] == "Anna" and seen[anna_turn]["voice_confirmed"]
+        assert {t["id"] for t in (await boris.get("/api/history")).json()} == {boris_turn, nobody}
+        (mine,) = (await anna.get("/api/voices")).json()
+        assert (mine["id"], mine["turns"]) == (voices[0], 1)
+        assert (await anna.patch(f"/api/voices/{voices[0]}", json={"label": "far from the mic"})).status_code == 204
+    assert len((await client.get("/api/voices")).json()) == 2
+    (only_anna,) = (await client.get("/api/history", params={"person_id": mine["person_id"]})).json()
+    assert (only_anna["id"], only_anna["voice_label"]) == (anna_turn, "far from the mic")

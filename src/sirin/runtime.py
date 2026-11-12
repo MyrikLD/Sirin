@@ -16,7 +16,8 @@ from sirin.settings_store import SettingsStore
 from sirin.speech import SpeechToText, TextToSpeech
 from sirin.status import Status, StatusBoard
 from sirin.vad import SileroModel
-from sirin.voices import VoiceModels, Voices, voice_tools
+from sirin.voice_models import VoiceModels
+from sirin.voices import Voices
 
 _log = logging.getLogger(__name__)
 
@@ -39,11 +40,10 @@ class Runtime:
         self.reminders = Reminders(self.db, self._deliver_reminder)
         self.voices: Voices | None = None
         if app_settings.voice_models.is_dir():
-            self.voices = Voices(app_settings.data_dir, VoiceModels.load(app_settings.voice_models))
-            _log.info("voices are recognized: %s", ", ".join(self.voices.names) or "none remembered yet")
+            self.voices = Voices(self.db, VoiceModels.load(app_settings.voice_models))
         else:
             _log.warning("voices are not recognized: no voice models at %s", app_settings.voice_models)
-        self.history = History(self.db, self.voices.embed if self.voices is not None else None)
+        self.history = History(self.db, self.voices)
         self._lock = asyncio.Lock()
         self._services: Services | None = None
         self._satellites: list[Satellite] = []
@@ -55,6 +55,9 @@ class Runtime:
             password = await ensure_admin(session)
         if password is not None:
             _log.warning("created the account %r with password %r: log in and change it", FIRST_ADMIN_LOGIN, password)
+        if self.voices is not None:
+            await self.voices.start()
+            _log.info("voices are recognized: %d known", self.voices.count)
         async with self._lock:
             await self._apply(await self._store.load(), reconnect_tools=False)
         await self.reminders.start()
@@ -84,8 +87,6 @@ class Runtime:
             or settings.mcp_servers != previous.mcp_servers
         ):
             tools = [reminder_tools(self.reminders)]
-            if self.voices is not None:
-                tools.append(voice_tools(self.voices))
             agent = Agent(settings.llm, settings.mcp_servers, self.oauth, self.board.touch, tools)
             await agent.start()
         else:

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from sirin.accounts import (
@@ -13,7 +13,7 @@ from sirin.accounts import (
     set_password,
     update_account,
 )
-from sirin.web.deps import SessionDep, require_admin
+from sirin.web.deps import RuntimeDep, SessionDep, require_admin
 
 router = APIRouter(prefix="/api/users", dependencies=[Depends(require_admin)])
 
@@ -57,10 +57,14 @@ async def patch_user(user_id: int, change: AccountChange, session: SessionDep) -
 
 
 @router.delete("/{user_id}", status_code=204)
-async def delete_user(user_id: int, session: SessionDep) -> None:
+async def delete_user(user_id: int, session: SessionDep, runtime: RuntimeDep, background: BackgroundTasks) -> None:
+    """The person's voices stay, unlinked."""
     try:
         deleted = await delete_account(session, user_id)
     except LastAdmin as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if runtime.voices is not None:
+        # A voice without its person no longer mutes other speech.
+        background.add_task(runtime.voices.reload)

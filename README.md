@@ -101,9 +101,28 @@ Dialog history is kept per device `conversation_id` for `conversation_ttl_s` sec
 
 ### Voices
 
-With the voice models in place, the agent has the tools `remember_voice`, `forget_voice` and `known_voices`. Say "remember my voice, I am Anna" in a phrase with at least 3 seconds of speech; if it was shorter, the assistant asks for a longer one. Voices are kept in `data/voices/`: `voices.json` with the names and the embeddings that tell who speaks, and for each voice a WAV file with the 3-second sample that the isolation network needs. You can listen to a sample to check what was recorded.
+With the voice models in place, every speaker the devices hear becomes a voice: a turn of 1.5 seconds of speech or
+more that matches no known voice creates one, and it is recognized from then on. Nobody has to introduce themselves.
+On the **Voices** tab and in **History**, a person claims a voice: open a turn you said and press **This is me**. The
+voice is then yours, and so are its past turns. Merge two voices that turned out to be one speaker; **Not this voice**
+takes a wrongly matched turn out of a voice. A member sees and manages only their own voices; the admin sees all of
+them, links them to people and deletes the unclaimed ones. An unclaimed voice disappears by itself once the history
+retention has removed its last turn.
 
-For each utterance Sirin compares the first 1.5 seconds of speech with the remembered voices. If it is one of them, the user's turn reaches the LLM tagged with the name (`[Voice: Anna] ...`, or `[Voice: not recognized]` for any other voice), and from that speech on the audio goes through a target-speaker network (VoxLock) that keeps only that voice. Each isolated stretch of speech is then compared with the voice again and muted when it is somebody else, so another person or a TV that talks on after the command neither adds words to it nor keeps the device listening. A voice that is not remembered is recognized as before, unchanged.
+A voice's profile is the mean of its confident turns: long enough, close to the profile, and close to every turn its
+person confirmed with **This is me**. A turn matched by mistake therefore does not pull the voice away, and you can
+take it out again.
+
+For each utterance Sirin compares the first 1.5 seconds of speech with the known voices. The user's turn reaches the
+LLM tagged with the person's name (`[Voice: Anna] ...`), or `[Voice: not recognized]` for a voice nobody claimed. A
+claimed voice whose voiceprint exists also isolates: from that speech on, the audio goes through a target-speaker
+network (VoxLock) that keeps only that voice, and each isolated stretch is compared with the voice again and muted
+when it is somebody else, so another person or a TV that talks on after the command neither adds words to it nor
+keeps the device listening. The voiceprint (about 10 MB) is made from the first turn of that voice with 3 seconds of
+speech or more; the audio itself is not stored. Unclaimed voices never mute anything, so a TV cannot become the
+voice that silences people.
+
+Voices live in the database. When the voice models change, all voices and the embeddings of all turns are dropped.
 
 Limits:
 
@@ -111,7 +130,8 @@ Limits:
 - A command shorter than about a second is often too short to tell the voice; it is then recognized unchanged.
 - If another voice is as loud as the speaker and talks at the same time, the network can keep the wrong one. That stretch is muted and the command is lost or cut.
 - It is a convenience, not access control: a recording of a voice passes as that voice.
-- Isolation takes about a quarter of one CPU core while a remembered voice speaks.
+- Isolation takes about a quarter of one CPU core while a claimed voice speaks.
+- How well short far-field phrases group into voices has not been measured yet; expect to merge some voices by hand.
 
 ### History
 

@@ -111,7 +111,13 @@ class PipelineRun:
             self._mark("done")
             if self._s.history is not None and self._turn.turn_id is not None:
                 self._s.history.close_turn(
-                    self._turn.turn_id, self._spoken, self._turn.calls, self._timings, self._error, self._turn.speech
+                    self._turn.turn_id,
+                    self._turn.voice_id,
+                    self._spoken,
+                    self._turn.calls,
+                    self._timings,
+                    self._error,
+                    self._turn.speech,
                 )
             await clip.close()
             self._send(Ev.VOICE_ASSISTANT_RUN_END)
@@ -136,6 +142,7 @@ class PipelineRun:
                 self._device,
                 self._conversation_id,
                 self._started_at,
+                self._turn.voice_id,
                 heard,
                 self._similarity,
                 round(len(speech) * 1000 / SAMPLE_RATE) if speech is not None else None,
@@ -229,14 +236,16 @@ class PipelineRun:
                     break
 
             if gate is not None:
-                self._turn = TurnDeps(device=self._device, speaker=gate.speaker, speech=gate.speech)
+                speaker = await self._s.voices.person_name(gate.speaker)
+                self._turn = TurnDeps(device=self._device, voice_id=gate.speaker, speaker=speaker, speech=gate.speech)
                 seconds = len(gate.speech) / SAMPLE_RATE
                 if gate.closest is None:
                     _log.info("[%s] the voice was not compared: %.1f s of speech", self._device, seconds)
                 else:
-                    name, score, ms = gate.closest
+                    voice_id, score, ms = gate.closest
                     self._similarity = score
-                    verdict = f"is {name}" if gate.speaker else f"is not recognized, the closest is {name}"
+                    who = f"voice {voice_id}" + (f" ({speaker})" if speaker else "")
+                    verdict = f"is {who}" if gate.speaker else f"is not recognized, the closest is voice {voice_id}"
                     _log.info(
                         "[%s] the voice %s (similarity %.2f on %.1f s; %.1f s of speech in all)",
                         self._device,

@@ -27,7 +27,7 @@ CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check an
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
 Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, settings store, live clips,
-VAD timeout, the speaker gate and voice store with fake models, MCP isolation and reconnect,
+VAD timeout, the speaker gate, voice store, profiles and voice links with fake models, MCP isolation and reconnect,
 history cap, spoken error reply, follow-up after a question, partial rebuild, settings API, reminder scheduling and
 tools). Tests need network once: `conftest.py` downloads the VAD model into the pytest cache. Unit tests take the `db`
 fixture, an in-memory database migrated to head.
@@ -108,9 +108,9 @@ Request flow for one utterance:
 Reminders (`reminders.py`): built-in agent tools (`reminder_tools()`, passed to `Agent` with no prefix) read the
 device from `TurnDeps`, the pydantic-ai deps of every run. The LLM writes a prompt for itself; `Reminders` (owned by
 `Runtime`, so it outlives agent rebuilds) keeps them in the `reminders` table, written before its in-memory copy, and
-at the due time calls `Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the `device:<name>`
-conversation, TTS writes a `LiveClip`, and the device plays it via the voice_assistant announce API (`ANNOUNCE`
-feature). An offline device is retried for up to `GRACE`; reminders missed while the service was down are dropped at
+at the due time calls `Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the
+`device:<name>` conversation, TTS writes a `LiveClip`, and the device plays it via the voice_assistant announce
+API (`ANNOUNCE` feature). An offline device is retried for up to `GRACE`; reminders missed while the service was down are dropped at
 start. A recurring reminder has a cron `schedule` (`cronsim`, read in local wall time by `cron_next()`) and an optional
 `until`; it keeps its id and its one task: after each occurrence (announced or dropped) `_run` moves `due` to the next
 time, and at start a missed one moves forward instead of being dropped. Times are the process's local zone.
@@ -121,28 +121,39 @@ file fails at start:
 - `SpeakerModel` is WeSpeaker ResNet34 on Kaldi filter bank features computed in `fbank()`; `Isolator` /
   `IsolatedStream` run the VoxLock target-speaker network (`enroll.onnx` turns a 3 s sample into a voiceprint of
   about 10 MB, `chunk.onnx` streams). The voiceprint is not a speaker vector, so both models are needed.
-- `Voices` (owned by `Runtime`, like `Reminders`) keeps the voices in `data/voices/`: `voices.json` with each name and
-  embedding, and one WAV file per voice with the 3 s sample; voiceprints are computed from the sample on first use
-  and cached.
+- `voice_models.py` holds the networks (`VoiceModels.load()` also hashes the three files into `version`);
+  `voices.py` the store and the gate; `voice_links.py` what people do with voices on the page.
+- `Voices` (owned by `Runtime`) keeps the `voices` table's profiles in memory for the gate threads and the set of
+  voices that may isolate (linked to a person and with a voiceprint). Voiceprints are read lazily: `isolate()` runs
+  in the gate's worker thread and reads through the event loop (`run_coroutine_threadsafe`). `start()` compares
+  `VoiceModels.version` with the `voice_models` row of `settings` and drops every voice and turn embedding when it
+  differs. Call `reload()` after any change to voices (routes do it as a background task, after the commit).
+- After each turn `History` calls `Voices.learn()`: it embeds the whole turn, gives it the gate's voice or, with
+  `NEW_VOICE_MS` of speech and no match, a new voice, makes the voiceprint from the first turn of a voice with 3 s of
+  speech, and recomputes the profile with `voice_profile()`: the mean of the anchors (`turns.voice_confirmed`) and the
+  confident turns (`CONFIDENT_MS`, `CONFIDENT_SIMILARITY`, close to every anchor). `clean_up()` (after the history
+  retention) deletes unlinked voices no turn points to.
 - `SpeakerGate` sits in `_listen()` between the microphone and both the endpointer and the STT, one per utterance,
   run with `asyncio.to_thread`. It holds each run of speech until it can be judged: before a lock it identifies
-  the run (`MATCH_THRESHOLD`), after a lock it verifies each isolated run (`KEEP_THRESHOLD`) and mutes the ones in
-  another voice. The verification is required: with its voice absent the network lets another voice through.
-  The thresholds come from measurements on clean recordings and are constants.
-- `PipelineRun` passes the speaker and the turn's speech to the agent in `TurnDeps`; `TurnDeps.tagged()` puts
-  the name in front of the user turn (`[Voice: Anna]`) and `Agent._render_prompt` explains the tag, and `voice_tools()` (`remember_voice`, `forget_voice`, `known_voices`)
-  enrolls from `TurnDeps.speech`.
+  the run (`MATCH_THRESHOLD`) and locks only on a voice that may isolate; after a lock it verifies each isolated run
+  (`KEEP_THRESHOLD`) and mutes the ones in another voice. The verification is required: with its voice absent the
+  network lets another voice through. `gate.speaker` is the voice id. The thresholds are constants.
+- `PipelineRun` passes the voice id, the person's name and the turn's speech to the agent in `TurnDeps`;
+  `TurnDeps.tagged()` puts the name in front of the user turn (`[Voice: Anna]`) and `Agent._render_prompt` explains
+  the tag. The agent has no voice tools: linking happens on the page after login, since a voice gives access.
+- Access: a member sees and changes only voices linked to them; unlinked voices are the admin's. History shows a
+  member their own turns and those of no person (`history.visible_to()`).
 
 History (`history.py`, `web/routers/history.py`, `static/history.js`): `History` (owned by `Runtime`) writes one
 `turns` row per run that heard something or answered a question with silence. `PipelineRun` calls `open_turn()` once
 the text is known, so `TurnDeps.turn_id` exists while the agent answers (`set_reminder` stores it in
 `reminders.turn_id`), and `close_turn()` in its `finally`, which stores the answer, `TurnDeps.calls` (filled by
 `Agent.stream_reply` from tool call and result events), `timings` (ms from the run start: `heard`, `first_text`,
-`first_audio`, `done`), the error and the speaker embedding in a background task. Every logged-in person reads
-`GET /api/history` (filters `device`, `since`, `until`, page by `before_id`); `/api/history/stream` sends each turn as it
-is added and again when answered, from `History.watch()` queues that `close()` ends on shutdown. An hourly task
-deletes turns older than `history.retention_days` unless a reminder still points to them. Voice links (`voice_id`) and
-the person filter come with the voices stage.
+`first_audio`, `done`) and the error in a background task, then has `Voices.learn()` assign the voice. Every
+logged-in person reads `GET /api/history` as far as `visible_to()` allows (filters `device`, `person_id`, `since`,
+`until`, page by `before_id`); `/api/history/stream` sends each visible turn as it is added and again when answered,
+from `History.watch()` queues that `close()` ends on shutdown. An hourly task deletes turns older than
+`history.retention_days` unless a reminder still points to them, then the unclaimed voices left without turns.
 
 Status (`status.py`): `Status.items[<settings list>][<item name>]` is an `ItemStatus` (`ok | pending | error` +
 `detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current, including an MCP connection

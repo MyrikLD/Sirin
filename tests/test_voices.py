@@ -1,26 +1,18 @@
-import json
+import asyncio
+from datetime import UTC, datetime
 
 import numpy as np
 import pytest
-from pydantic_ai import Agent, ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+import sqlalchemy as sa
 
+from sirin.accounts import Role, create_account
 from sirin.agent import TurnDeps
+from sirin.history import History
+from sirin.tables import Turn, Voice
 from sirin.vad import FRAME_SAMPLES, SAMPLE_RATE
-from sirin.voices import (
-    SAMPLE_SAMPLES,
-    IsolatedStream,
-    Isolator,
-    SpeakerGate,
-    SpeakerModel,
-    TooShort,
-    VoiceModels,
-    Voices,
-    fbank,
-    to_floats,
-    to_pcm,
-    voice_tools,
-)
+from sirin.voice_links import NotAllowed, claim_turn, merge_voices, release_turn
+from sirin.voice_models import IsolatedStream, Isolator, SpeakerModel, VoiceModels, fbank, to_floats, to_pcm
+from sirin.voices import CONFIDENT_MS, SpeakerGate, Voices, voice_profile
 
 # The fakes know two voices: a positive level and a negative one.
 ANNA, STRANGER = 0.5, -0.5
@@ -52,7 +44,7 @@ class _Isolator(Isolator):
         pass
 
     def voiceprint(self, sample: np.ndarray) -> dict[str, np.ndarray]:
-        return {}
+        return {"k": np.full(4, sample.mean(), np.float32)}
 
     def stream(self, voiceprint: dict[str, np.ndarray]) -> IsolatedStream:
         return _Stream()
@@ -63,6 +55,10 @@ class _Vad:
 
     def stream(self):
         return lambda frame: float(np.abs(to_floats(frame)).mean() > 0.1)
+
+
+def _models(version: str = "v1") -> VoiceModels:
+    return VoiceModels(speaker=_Speaker(), isolator=_Isolator(), version=version)
 
 
 def _audio(*parts: tuple[float, float]) -> np.ndarray:
@@ -76,99 +72,146 @@ def _audio(*parts: tuple[float, float]) -> np.ndarray:
 
 
 @pytest.fixture
-def voices(tmp_path) -> Voices:
-    return Voices(tmp_path, VoiceModels(speaker=_Speaker(), isolator=_Isolator()))
+async def voices(db) -> Voices:
+    voices = Voices(db, _models())
+    await voices.start()
+    return voices
 
 
-def _through_gate(voices: Voices, audio: np.ndarray) -> tuple[SpeakerGate, np.ndarray]:
-    gate = SpeakerGate(voices, _Vad())
-    pcm = to_pcm(audio)
-    # Chunks that are not whole frames, as a device may send them.
-    out = b"".join(gate.feed(pcm[i : i + 700]) for i in range(0, len(pcm), 700)) + gate.finish()
+async def _turn(db, voices: Voices, speech: np.ndarray, voice_id: int | None = None) -> int:
+    """A history turn of speech, learned the way the pipeline does it."""
+    turn_id = await History(db, voices).open_turn("kitchen", "c", datetime.now(UTC), voice_id, "hi", None, None)
+    await voices.learn(turn_id, voice_id, speech)
+    return turn_id
+
+
+async def _voice_of(db, turn_id: int) -> int | None:
+    async with db.session() as session:
+        return await session.scalar(sa.select(Turn.voice_id).where(Turn.id == turn_id))
+
+
+async def _person(db, login: str, role: Role = Role.MEMBER):
+    async with db.session() as session, session.begin():
+        return await create_account(session, login, login.title(), "x", role)
+
+
+async def _through_gate(voices: Voices, audio: np.ndarray) -> tuple[SpeakerGate, np.ndarray]:
+    """The gate runs in a worker thread, as in the pipeline: it reads voiceprints through the event loop."""
+
+    def run() -> tuple[SpeakerGate, bytes]:
+        gate = SpeakerGate(voices, _Vad())
+        pcm = to_pcm(audio)
+        # Chunks that are not whole frames, as a device may send them.
+        return gate, b"".join(gate.feed(pcm[i : i + 700]) for i in range(0, len(pcm), 700)) + gate.finish()
+
+    gate, out = await asyncio.to_thread(run)
     return gate, to_floats(out)
 
 
-def test_known_voice_locks_the_gate_and_other_voices_are_muted(voices):
-    voices.remember("Anna", _audio((ANNA, 3)))
-    audio = _audio((0, 0.5), (ANNA, 2), (0, 0.5), (STRANGER, 3), (0, 0.5))
-    gate, out = _through_gate(voices, audio)
+async def test_an_unknown_speaker_becomes_a_voice_that_is_recognized_later(db, voices):
+    assert await _voice_of(db, await _turn(db, voices, _audio((ANNA, 1)))) is None
+    first = await _turn(db, voices, _audio((ANNA, 2)))
+    voice_id = await _voice_of(db, first)
+    assert voice_id is not None and voices.count == 1
 
-    assert gate.speaker == "Anna"
-    assert len(out) == len(audio)
-    anna, stranger = slice(SAMPLE_RATE // 2, SAMPLE_RATE * 5 // 2), slice(SAMPLE_RATE * 3, SAMPLE_RATE * 6)
-    assert np.array_equal(out[anna], audio[anna])
+    assert voices.closest(_audio((ANNA, 1))) == (voice_id, 1.0)
+    assert voices.closest(_audio((STRANGER, 1))) == (voice_id, 0.0)
+    gate, _ = await _through_gate(voices, _audio((0, 0.5), (ANNA, 2), (0, 0.5)))
+    assert gate.speaker == voice_id
+
+
+async def test_only_a_linked_voice_mutes_other_speech(db, voices):
+    voice_id = await _voice_of(db, await _turn(db, voices, _audio((ANNA, 4))))
+    audio = _audio((0, 0.5), (ANNA, 2), (0, 0.5), (STRANGER, 3), (0, 0.5))
+
+    gate, out = await _through_gate(voices, audio)
+    assert gate.speaker == voice_id
+    assert np.array_equal(out, audio)
+
+    anna = await _person(db, "anna")
+    async with db.session() as session, session.begin():
+        await session.execute(sa.update(Voice).where(Voice.id == voice_id).values(user_id=anna.id))
+    await voices.reload()
+    gate, out = await _through_gate(voices, audio)
+    assert gate.speaker == voice_id
+    said, stranger = slice(SAMPLE_RATE // 2, SAMPLE_RATE * 5 // 2), slice(SAMPLE_RATE * 3, SAMPLE_RATE * 6)
+    assert np.array_equal(out[said], audio[said])
     assert not out[stranger].any()
     assert np.all(gate.speech > 0)
+    assert await voices.person_name(voice_id) == "Anna"
 
 
-def test_unknown_voice_passes_unchanged(voices):
-    voices.remember("Anna", _audio((ANNA, 3)))
-    audio = _audio((0, 0.5), (STRANGER, 2.2), (0, 0.5))
-    gate, out = _through_gate(voices, audio)
-
-    assert gate.speaker is None
-    assert np.array_equal(out, audio)
-    assert len(gate.speech) == round(2.2 * SAMPLE_RATE / FRAME_SAMPLES) * FRAME_SAMPLES
+async def test_a_short_run_is_not_compared(db, voices):
+    await _turn(db, voices, _audio((ANNA, 2)))
+    gate, _ = await _through_gate(voices, _audio((0, 0.5), (ANNA, 0.4), (0, 1)))
+    assert gate.closest is None and gate.speaker is None
 
 
-def test_gate_reports_the_closest_voice_it_compared(voices):
-    voices.remember("Anna", _audio((ANNA, 3)))
-    gate, _ = _through_gate(voices, _audio((0, 0.5), (ANNA, 0.4), (0, 1)))
-    assert gate.closest is None
-
-    gate, _ = _through_gate(voices, _audio((0, 0.5), (STRANGER, 2), (0, 1)))
-    assert gate.speaker is None
-    assert gate.closest is not None and gate.closest[:2] == ("Anna", 0.0)
-
-
-def test_known_voice_after_a_stranger_still_locks(voices):
-    voices.remember("Anna", _audio((ANNA, 3)))
-    audio = _audio((0, 0.5), (STRANGER, 2), (0, 0.5), (ANNA, 2), (0, 0.5))
-    gate, out = _through_gate(voices, audio)
-
-    assert gate.speaker == "Anna"
-    assert np.array_equal(out, audio)
+def test_profile_follows_confident_turns_and_never_leaves_the_anchors():
+    a, b = np.array([1.0, 0.0], np.float32), np.array([0.0, 1.0], np.float32)
+    near_a = np.array([0.8, 0.6], np.float32)
+    assert np.array_equal(voice_profile(a, [(b, CONFIDENT_MS, False)]), a)
+    assert np.array_equal(voice_profile(a, [(near_a, CONFIDENT_MS - 1, False)]), a)
+    moved = voice_profile(a, [(near_a, CONFIDENT_MS, False)])
+    assert np.allclose(moved, near_a)
+    # An anchor counts whatever it is like; a turn far from the anchor does not.
+    anchored = voice_profile(near_a, [(b, 0, True), (near_a, CONFIDENT_MS, False)])
+    assert np.allclose(anchored, (b + near_a) / np.linalg.norm(b + near_a))
+    assert np.allclose(voice_profile(a, [(b, 0, True), (a, CONFIDENT_MS, False)]), b)
 
 
-def test_voices_survive_a_restart_and_can_be_forgotten(tmp_path, voices):
-    with pytest.raises(TooShort):
-        voices.remember("Anna", _audio((ANNA, 2)))
-    voices.remember("Anna", _audio((ANNA, 4)))
-    (saved,) = json.loads((tmp_path / "voices" / "voices.json").read_text())
-    assert saved["name"] == "Anna"
-    sample = tmp_path / "voices" / saved["sample"]
-    assert sample.stat().st_size == 44 + SAMPLE_SAMPLES * 2
+async def test_other_models_drop_every_voice_and_embedding(db, voices):
+    turn_id = await _turn(db, voices, _audio((ANNA, 4)))
+    again = Voices(db, _models("v1"))
+    await again.start()
+    assert again.count == 1
 
-    reloaded = Voices(tmp_path, VoiceModels(speaker=_Speaker(), isolator=_Isolator()))
-    assert reloaded.identify(_audio((ANNA, 1))) == "Anna"
-    assert reloaded.identify(_audio((STRANGER, 1))) is None
-    assert reloaded.forget("anna")
-    assert not reloaded.forget("Anna")
-    assert reloaded.names == []
-    assert not sample.exists()
+    other = Voices(db, _models("v2"))
+    await other.start()
+    assert other.count == 0
+    async with db.session() as session:
+        assert await session.scalar(sa.select(Turn.embedding).where(Turn.id == turn_id)) is None
 
 
-def _calling(tool: str, args: dict) -> FunctionModel:
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        last = messages[-1].parts[-1]
-        if isinstance(last, ToolReturnPart):
-            return ModelResponse(parts=[TextPart(str(last.content))])
-        return ModelResponse(parts=[ToolCallPart(tool, args)])
+async def test_an_unclaimed_voice_goes_with_its_last_turn(db, voices):
+    turn_id = await _turn(db, voices, _audio((ANNA, 2)))
+    assert await voices.clean_up() == 0
+    async with db.session() as session, session.begin():
+        await session.execute(sa.delete(Turn).where(Turn.id == turn_id))
+    assert await voices.clean_up() == 1
+    assert voices.count == 0
 
-    return FunctionModel(model)
+
+async def test_claiming_a_turn_links_its_voice_and_only_its_owner_changes_it(db, voices):
+    anna, boris = await _person(db, "anna"), await _person(db, "boris")
+    first = await _turn(db, voices, _audio((ANNA, 2)))
+    voice_id = await _voice_of(db, first)
+    second = await _turn(db, voices, _audio((ANNA, 2)), voice_id)
+
+    async with db.session() as session, session.begin():
+        with pytest.raises(NotAllowed):
+            await release_turn(session, anna, second)
+        assert await claim_turn(session, anna, first) == voice_id
+    async with db.session() as session, session.begin():
+        with pytest.raises(NotAllowed):
+            await claim_turn(session, boris, second)
+        await release_turn(session, anna, second)
+    assert await _voice_of(db, second) is None
+    assert await voices.person_name(voice_id) == "Anna"
 
 
-async def test_voice_is_remembered_from_the_speech_of_the_turn(voices):
-    agent = Agent(deps_type=TurnDeps, toolsets=[voice_tools(voices)])
-    remember = _calling("remember_voice", {"name": "Anna"})
-
-    short = TurnDeps(device="kitchen", speech=_audio((ANNA, 1)))
-    result = await agent.run("remember me", model=remember, deps=short)
-    assert "longer phrase" in result.output
-    assert voices.names == []
-
-    await agent.run("remember me", model=remember, deps=TurnDeps(device="kitchen", speech=_audio((ANNA, 4))))
-    assert voices.names == ["Anna"]
+async def test_merged_voices_keep_one_profile_and_all_turns(db, voices):
+    admin = await _person(db, "boss", Role.ADMIN)
+    first = await _turn(db, voices, _audio((ANNA, 2)))
+    other = await _turn(db, voices, _audio((STRANGER, 4)))
+    keep, gone = await _voice_of(db, first), await _voice_of(db, other)
+    async with db.session() as session, session.begin():
+        await merge_voices(session, admin, gone, keep)
+    await voices.reload()
+    assert voices.count == 1
+    assert await _voice_of(db, other) == keep
+    async with db.session() as session:
+        assert await session.scalar(sa.select(Voice.voiceprint.is_not(None)).where(Voice.id == keep))
 
 
 def test_turn_carries_the_voice_only_when_voices_are_recognized():
@@ -183,10 +226,3 @@ def test_fbank_has_a_row_per_10_ms_and_no_mean():
     features = fbank(np.random.default_rng(0).standard_normal(SAMPLE_RATE).astype(np.float32) * 0.1)
     assert features.shape == (98, 80)
     assert np.abs(features.mean(axis=0)).max() < 1e-3
-
-
-def test_sample_is_the_loudest_three_seconds(tmp_path, voices):
-    voices.remember("Anna", _audio((0.1, 2), (ANNA, 3), (0.1, 2)))
-    reloaded = Voices(tmp_path, VoiceModels(speaker=_Speaker(), isolator=_Isolator()))
-    assert reloaded.isolate("Anna").push(np.zeros(4, np.float32)).shape == (4,)
-    assert SAMPLE_SAMPLES == 3 * SAMPLE_RATE

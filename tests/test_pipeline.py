@@ -2,10 +2,13 @@ from types import SimpleNamespace
 
 from aioesphomeapi import VoiceAssistantEventType as Ev
 
+from sirin.accounts import Account, Role
 from sirin.agent import ToolCall
 from sirin.clips import ClipStore
 from sirin.history import History, list_turns
 from sirin.pipeline import SILENCE, PipelineRun
+
+ADMIN = Account(id=0, login="admin", name="Admin", role=Role.ADMIN, created_at="2026-01-01T00:00:00Z")
 
 
 class _Client:
@@ -101,14 +104,14 @@ async def test_silence_after_the_wake_word_is_an_error(monkeypatch):
 
 
 async def test_the_turn_is_kept_in_the_history(monkeypatch, db):
-    history = History(db, embed=None)
+    history = History(db, None)
     watched = history.watch()
     agent = _Agent("Done.", fails=True, error_reply="Sorry.")
     await _run(monkeypatch, agent, history=history)
     await history.stop()
 
     async with db.session() as session:
-        (turn,) = await list_turns(session)
+        (turn,) = await list_turns(session, ADMIN)
     assert agent.turns[0].turn_id == turn.id
     assert (turn.device, turn.text, turn.answer) == ("kitchen", "turn on the light", "Done. Sorry.")
     assert [call.name for call in turn.tools] == ["light_on"]
@@ -119,8 +122,8 @@ async def test_the_turn_is_kept_in_the_history(monkeypatch, db):
 
 
 async def test_a_run_that_heard_nothing_is_not_kept(monkeypatch, db):
-    history = History(db, embed=None)
+    history = History(db, None)
     await _run(monkeypatch, _Agent("Hello."), heard="", history=history)
     await history.stop()
     async with db.session() as session:
-        assert await list_turns(session) == []
+        assert await list_turns(session, ADMIN) == []

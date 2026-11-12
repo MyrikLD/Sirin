@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -8,14 +7,14 @@ import sqlalchemy as sa
 from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sirin.accounts import Account, Role
 from sirin.agent import ToolCall
 from sirin.database import Database
-from sirin.tables import Reminder, Turn
+from sirin.tables import Reminder, Turn, User, Voice
+from sirin.voices import Voices
 
 # How often turns older than the retention are deleted.
 CLEANUP_INTERVAL_S = 3600
-# Less speech than this gives no useful speaker embedding.
-MIN_EMBED_SAMPLES = 8000
 
 _log = logging.getLogger(__name__)
 
@@ -25,7 +24,12 @@ class TurnOut(BaseModel):
     started_at: AwareDatetime
     device: str
     conversation_id: str
-    similarity: float | None = Field(description="Similarity with the closest remembered voice")
+    voice_id: int | None = Field(description="The voice that spoke; None when it was not recognized or too short")
+    voice_label: str | None
+    person_id: int | None = Field(description="The person the voice is linked to")
+    person_name: str | None
+    voice_confirmed: bool = Field(description="The person said this turn is theirs")
+    similarity: float | None = Field(description="Similarity with the closest known voice")
     speech_ms: int | None
     text: str = Field(description="What was recognized; empty when a question was met with silence")
     answer: str | None = Field(description="What was spoken back; None while the answer is being made")
@@ -34,21 +38,53 @@ class TurnOut(BaseModel):
     error: str | None
 
 
-_COLUMNS = [getattr(Turn, name) for name in TurnOut.model_fields]
+_SELECT = (
+    sa.select(
+        Turn.id,
+        Turn.started_at,
+        Turn.device,
+        Turn.conversation_id,
+        Turn.voice_id,
+        Voice.label.label("voice_label"),
+        Voice.user_id.label("person_id"),
+        User.name.label("person_name"),
+        Turn.voice_confirmed,
+        Turn.similarity,
+        Turn.speech_ms,
+        Turn.text,
+        Turn.answer,
+        Turn.tools,
+        Turn.timings,
+        Turn.error,
+    )
+    .outerjoin(Voice, Voice.id == Turn.voice_id)
+    .outerjoin(User, User.id == Voice.user_id)
+)
+
+
+def visible_to(account: Account) -> sa.ColumnElement[bool]:
+    """The admin sees every turn; a member sees their own and the ones of no person."""
+    if account.role == Role.ADMIN:
+        return sa.true()
+    return sa.or_(Voice.user_id.is_(None), Voice.user_id == account.id)
 
 
 async def list_turns(
     session: AsyncSession,
+    viewer: Account,
     device: str | None = None,
+    person_id: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     before_id: int | None = None,
     limit: int = 50,
 ) -> list[TurnOut]:
     """Newest first; before_id continues a page."""
-    stmt = sa.select(*_COLUMNS).order_by(Turn.id.desc()).limit(limit)
+    stmt = _SELECT.where(visible_to(viewer)).order_by(Turn.id.desc()).limit(limit)
     if device is not None:
         stmt = stmt.where(Turn.device == device)
+    if person_id is not None:
+        stmt = stmt.where(Voice.user_id == person_id)
     if since is not None:
         stmt = stmt.where(Turn.started_at >= since)
     if until is not None:
@@ -59,8 +95,9 @@ async def list_turns(
     return [TurnOut.model_validate(dict(r)) for r in rows.mappings()]
 
 
-async def get_turn(session: AsyncSession, turn_id: int) -> TurnOut | None:
-    row = (await session.execute(sa.select(*_COLUMNS).where(Turn.id == turn_id))).mappings().one_or_none()
+async def get_turn(session: AsyncSession, turn_id: int, viewer: Account) -> TurnOut | None:
+    rows = await session.execute(_SELECT.where(Turn.id == turn_id, visible_to(viewer)))
+    row = rows.mappings().one_or_none()
     return TurnOut.model_validate(dict(row)) if row is not None else None
 
 
@@ -71,10 +108,10 @@ async def turn_devices(session: AsyncSession) -> list[str]:
 class History:
     """Writes one `turns` row per utterance, tells the open history pages, and deletes turns past the retention."""
 
-    def __init__(self, db: Database, embed: Callable[[np.ndarray], np.ndarray] | None) -> None:
-        """embed: the speaker embedding of speech, or None without voice models."""
+    def __init__(self, db: Database, voices: Voices | None) -> None:
+        """voices: None without voice models; then turns get no voice and no embedding."""
         self._db = db
-        self._embed = embed
+        self._voices = voices
         self.retention = timedelta(days=30)
         self._watchers: set[asyncio.Queue[int | None]] = set()
         self._writes: set[asyncio.Task[None]] = set()
@@ -94,6 +131,7 @@ class History:
         device: str,
         conversation_id: str,
         started_at: datetime,
+        voice_id: int | None,
         text: str,
         similarity: float | None,
         speech_ms: int | None,
@@ -106,6 +144,8 @@ class History:
                     started_at=started_at,
                     device=device,
                     conversation_id=conversation_id,
+                    # NULL when the voice was deleted while the user spoke.
+                    voice_id=sa.select(Voice.id).where(Voice.id == voice_id).scalar_subquery(),
                     similarity=similarity,
                     speech_ms=speech_ms,
                     text=text,
@@ -121,6 +161,7 @@ class History:
     def close_turn(
         self,
         turn_id: int,
+        voice_id: int | None,
         answer: str,
         tools: list[ToolCall],
         timings: dict[str, int],
@@ -128,25 +169,20 @@ class History:
         speech: np.ndarray | None,
     ) -> None:
         """Stores the answer in the background, so the end of the run does not wait for the speaker network."""
-        task = asyncio.create_task(self._close(turn_id, answer, tools, timings, error, speech))
+        task = asyncio.create_task(self._close(turn_id, voice_id, answer, tools, timings, error, speech))
         self._writes.add(task)
         task.add_done_callback(self._writes.discard)
 
     async def _close(
         self,
         turn_id: int,
+        voice_id: int | None,
         answer: str,
         tools: list[ToolCall],
         timings: dict[str, int],
         error: str | None,
         speech: np.ndarray | None,
     ) -> None:
-        embedding = None
-        if self._embed is not None and speech is not None and len(speech) >= MIN_EMBED_SAMPLES:
-            try:
-                embedding = (await asyncio.to_thread(self._embed, speech)).astype(np.float32).tobytes()
-            except Exception:
-                _log.exception("turn %d: no speaker embedding", turn_id)
         async with self._db.session() as session, session.begin():
             await session.execute(
                 sa.update(Turn)
@@ -156,9 +192,13 @@ class History:
                     tools=[call.model_dump(mode="json") for call in tools],
                     timings=timings,
                     error=error,
-                    embedding=embedding,
                 )
             )
+        if self._voices is not None and speech is not None:
+            try:
+                await self._voices.learn(turn_id, voice_id, speech)
+            except Exception:
+                _log.exception("turn %d: its voice is not learned", turn_id)
         self._notify(turn_id)
 
     def watch(self) -> asyncio.Queue[int | None]:
@@ -190,6 +230,8 @@ class History:
             count = len(deleted.all())
         if count:
             _log.info("deleted %d turn(s) older than %s", count, cutoff)
+        if self._voices is not None:
+            await self._voices.clean_up()
         return count
 
     async def _clean_up_regularly(self) -> None:

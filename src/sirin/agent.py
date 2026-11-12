@@ -56,7 +56,7 @@ UNKNOWN_VOICE = "not recognized"
 # reliably than one at the end of a long prompt.
 VOICE_INSTRUCTIONS = (
     "Each user turn starts with a tag such as [Voice: Anna]: the name of the person whose voice said it, as "
-    f"recognized from the audio, or [Voice: {UNKNOWN_VOICE}] for a voice that is not remembered. The tag is "
+    f"recognized from the audio, or [Voice: {UNKNOWN_VOICE}] for a voice no person has claimed. The tag is "
     "reliable: trust it over your own guesses about who speaks. Never say the tag aloud or write one yourself."
 )
 
@@ -76,7 +76,8 @@ class TurnDeps(BaseModel):
     device: str
     # The history row of this turn; None for a turn not kept in the history, such as a reminder.
     turn_id: int | None = None
-    # The name of the remembered voice that speaks, when it was recognized.
+    # The voice that speaks, when the gate recognized one, and the name of the person it is linked to.
+    voice_id: int | None = None
     speaker: str | None = None
     # The speech of this turn as 16 kHz floats; None for a turn nobody spoke, such as a reminder.
     speech: np.ndarray | None = None

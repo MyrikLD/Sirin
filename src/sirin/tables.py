@@ -96,6 +96,23 @@ class McpToken(Base):
     server_metadata = sa.Column(sa.JSON, nullable=True)
 
 
+class Voice(Base):
+    """A voice heard in the history: created for every speaker nobody's voice matched, linked to a person by hand."""
+
+    __tablename__ = "voices"
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    # NULL: nobody has said it is theirs; such a voice lives while history turns point to it.
+    user_id = sa.Column(sa.Integer, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Set by the person; the page shows "voice <id>" while it is empty.
+    label = sa.Column(sa.String, nullable=True)
+    # The profile it is identified by: float32, the mean of its confident turns.
+    embedding = sa.Column(sa.LargeBinary, nullable=False)
+    # The isolation network's tensors (np.savez), about 10 MB; NULL until a turn of 3 s of speech or more.
+    voiceprint = sa.Column(sa.LargeBinary, nullable=True)
+    created_at = sa.Column(UtcDateTime, nullable=False)
+
+
 class Turn(Base):
     """One utterance and its answer: the history."""
 
@@ -105,7 +122,10 @@ class Turn(Base):
     started_at = sa.Column(UtcDateTime, nullable=False, index=True)
     device = sa.Column(sa.String, nullable=False)
     conversation_id = sa.Column(sa.String, nullable=False)
-    # Similarity with the closest remembered voice; NULL when nothing was compared.
+    voice_id = sa.Column(sa.Integer, sa.ForeignKey("voices.id", ondelete="SET NULL"), nullable=True, index=True)
+    # The person said "this is me": the turn is an anchor of its voice's profile.
+    voice_confirmed = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    # Similarity with the closest known voice; NULL when nothing was compared.
     similarity = sa.Column(sa.Float, nullable=True)
     # The speaker embedding of the whole turn, float32; NULL without voice models or with too little speech.
     embedding = sa.Column(sa.LargeBinary, nullable=True)
