@@ -17,6 +17,7 @@ def _parts(runtime: Runtime) -> dict:
 
 async def test_apply_rebuilds_only_what_changed(app_settings):
     runtime = Runtime(app_settings)
+    await runtime.start()
     try:
         await runtime.apply(RuntimeSettings.model_validate({"devices": DEVICES}))
         before = _parts(runtime)

@@ -18,6 +18,7 @@ pip install -e .              # install (src layout, hatchling)
 sirin -v                      # run; -v enables DEBUG and protocol event logs
 python -m sirin               # same entry point
 ruff check src tests && ruff format src tests   # lint/format (line-length 120)
+alembic revision --autogenerate -m "..."         # new migration after a change in tables.py; never write one by hand
 pytest                        # basic offline tests (tests/), about a second
 docker compose up -d --build  # container; bridge network, needs SIRIN_PUBLIC_URL in .env, settings in ./data
 ```
@@ -25,20 +26,35 @@ docker compose up -d --build  # container; bridge network, needs SIRIN_PUBLIC_UR
 CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check and pytest, then builds the image for
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
-Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, live clips, VAD timeout,
-the speaker gate and voice store with fake models,
-MCP isolation and reconnect, history cap, spoken error reply, follow-up after a question, partial rebuild, settings
-API, reminder scheduling and tools). Tests need network once: `conftest.py` downloads the VAD model into the pytest
-cache.
+Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, settings store and the import
+of old files, live clips, VAD timeout, the speaker gate and voice store with fake models, MCP isolation and reconnect,
+history cap, spoken error reply, follow-up after a question, partial rebuild, settings API, reminder scheduling and
+tools). Tests need network once: `conftest.py` downloads the VAD model into the pytest cache. Unit tests take the `db`
+fixture, an in-memory database migrated to head.
 
-The settings page at `http://<host>:8765/` stores config in `data/settings.json` (git-ignored); process-level config
+The settings page at `http://<host>:8765/` stores config in `data/sirin.db` (git-ignored); process-level config
 comes from `SIRIN_*` env vars or `.env` (`AppSettings`).
+
+## Database
+
+SQLite through SQLAlchemy async (`aiosqlite`), see `plan.md` for where it is going:
+- `tables.py`: the tables (classic `sa.Column` style). Times are `UtcDateTime`: aware in Python, naive UTC in SQLite;
+  a naive value is refused.
+- `database.py`: `Database` opens the engine (WAL, foreign keys on, file mode 0600) and `migrate()` applies the Alembic
+  migrations in `migrations/` at every start, with foreign keys off while it runs (batch mode recreates tables).
+  `alembic.ini` is for the command line only. Store code takes an `AsyncSession` and does not commit; the caller opens
+  `async with db.session() as s, s.begin():`.
+- `legacy.py`: at start, the JSON files of older versions are imported into a database without settings and renamed
+  `*.imported`. `data/voices/` is not imported.
+- `users` exists for the coming login; nothing uses it yet.
 
 ## Architecture
 
 Two config layers in `config.py`:
 - `AppSettings` (env, read once at start): bind address, `public_url`, clip TTL, `data_dir`, `vad_model`.
-- `RuntimeSettings` (edited on the web page, persisted by `SettingsStore`): devices, STT, TTS, VAD, LLM, MCP servers.
+- `RuntimeSettings` (edited on the web page, persisted by `SettingsStore` in `settings_store.py`): devices, STT, TTS,
+  VAD, LLM, MCP servers. Each block is one row of `settings` and only changed rows are written; MCP servers are rows
+  of `mcp_servers` with `owner_id` NULL (shared), matched by name, so a kept server keeps its id and its tokens.
   `PUT /api/settings` calls `Runtime.apply()`, which saves it and under a lock rebuilds only what changed, with no
   restart needed:
   - the `Agent` (and its MCP connections) when `llm` or `mcp_servers` changed;
@@ -92,8 +108,8 @@ Request flow for one utterance:
 
 Reminders (`reminders.py`): built-in agent tools (`reminder_tools()`, passed to `Agent` with no prefix) read the
 device from `TurnDeps`, the pydantic-ai deps of every run. The LLM writes a prompt for itself; `Reminders` (owned by
-`Runtime`, so it outlives agent rebuilds) keeps them in `data/reminders.json` and at the due time calls
-`Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the `device:<name>`
+`Runtime`, so it outlives agent rebuilds) keeps them in the `reminders` table, written before its in-memory copy, and
+at the due time calls `Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the `device:<name>`
 conversation, TTS writes a `LiveClip`, and the device plays it via the voice_assistant announce API (`ANNOUNCE`
 feature). An offline device is retried for up to `GRACE`; reminders missed while the service was down are dropped at
 start. A recurring reminder has a cron `schedule` (`cronsim`, read in local wall time by `cron_next()`) and an optional
@@ -144,6 +160,7 @@ from the schema, so changing `config.py` changes the page:
 - `x-authorize` on a boolean field shows an Authorize button while the field is on (OAuth for MCP servers).
 
 OAuth for HTTP MCP servers (`oauth.py`): `OAuthManager` runs the login flow from the settings page (redirect back
-to `/oauth/callback` on the origin the page was opened from), stores tokens per server in `data/oauth/`, and on
+to `/oauth/callback` on the origin the page was opened from), stores tokens in `mcp_tokens` (`DbTokenStorage`, found by
+the server's name and URL, so an unsaved server cannot be authorized and a changed URL drops the tokens), and on
 success calls back into `Runtime`, which reconnects the MCP servers (`Runtime.reconnect_tools()`). During normal runs
 the provider refuses to start an interactive login and raises `OAuthRequired` instead.

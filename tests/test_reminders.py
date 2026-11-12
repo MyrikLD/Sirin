@@ -1,12 +1,25 @@
 import asyncio
-import json
 from datetime import UTC, datetime, timedelta
 
+import sqlalchemy as sa
 from pydantic_ai import Agent, ModelMessage, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from sirin import tables
 from sirin.agent import TurnDeps
+from sirin.database import Database
 from sirin.reminders import Reminder, Reminders, cron_next, reminder_tools
+
+
+async def _store(db: Database, saved: list[Reminder]) -> None:
+    async with db.session() as session, session.begin():
+        await session.execute(sa.insert(tables.Reminder), [r.model_dump() for r in saved])
+
+
+async def _stored(db: Database) -> list[Reminder]:
+    async with db.session() as session:
+        rows = await session.execute(sa.select(*(getattr(tables.Reminder, f) for f in Reminder.model_fields)))
+        return [Reminder.model_validate(dict(r)) for r in rows.mappings()]
 
 
 async def _wait_for(condition) -> None:
@@ -15,26 +28,26 @@ async def _wait_for(condition) -> None:
             await asyncio.sleep(0.01)
 
 
-async def test_due_reminder_is_announced_once_and_forgotten(tmp_path):
+async def test_due_reminder_is_announced_once_and_forgotten(db):
     announced: list[Reminder] = []
 
     async def deliver(reminder: Reminder) -> bool:
         announced.append(reminder)
         return True
 
-    reminders = Reminders(tmp_path, deliver)
+    reminders = Reminders(db, deliver)
     await reminders.start()
     try:
-        reminders.add("kitchen", datetime.now(UTC) + timedelta(milliseconds=100), "stove")
-        assert json.loads((tmp_path / "reminders.json").read_text())[0]["prompt"] == "stove"
+        await reminders.add("kitchen", datetime.now(UTC) + timedelta(milliseconds=100), "stove")
+        assert [r.prompt for r in await _stored(db)] == ["stove"]
         await _wait_for(lambda: not reminders.pending("kitchen"))
     finally:
         await reminders.stop()
     assert [r.prompt for r in announced] == ["stove"]
-    assert json.loads((tmp_path / "reminders.json").read_text()) == []
+    assert await _stored(db) == []
 
 
-async def test_offline_device_is_retried(tmp_path):
+async def test_offline_device_is_retried(db):
     attempts = 0
 
     async def deliver(reminder: Reminder) -> bool:
@@ -42,23 +55,23 @@ async def test_offline_device_is_retried(tmp_path):
         attempts += 1
         return attempts == 3
 
-    reminders = Reminders(tmp_path, deliver, retry_s=0.05)
+    reminders = Reminders(db, deliver, retry_s=0.05)
     await reminders.start()
     try:
-        reminders.add("kitchen", datetime.now(UTC), "stove")
+        await reminders.add("kitchen", datetime.now(UTC), "stove")
         await _wait_for(lambda: not reminders.pending("kitchen"))
     finally:
         await reminders.stop()
     assert attempts == 3
 
 
-async def test_restart_keeps_pending_and_drops_missed(tmp_path):
+async def test_restart_keeps_pending_and_drops_missed(db):
     now = datetime.now(UTC)
     saved = [
         Reminder(id="eat", device="kitchen", due=now + timedelta(hours=1), prompt="eat", created=now),
         Reminder(id="missed", device="kitchen", due=now - timedelta(seconds=1), prompt="missed", created=now),
     ]
-    (tmp_path / "reminders.json").write_text(json.dumps([r.model_dump(mode="json") for r in saved]))
+    await _store(db, saved)
 
     announced: list[Reminder] = []
 
@@ -66,11 +79,11 @@ async def test_restart_keeps_pending_and_drops_missed(tmp_path):
         announced.append(reminder)
         return True
 
-    reminders = Reminders(tmp_path, deliver)
+    reminders = Reminders(db, deliver)
     await reminders.start()
     await reminders.stop()
     assert [r.prompt for r in reminders.pending("kitchen")] == ["eat"]
-    assert [r["id"] for r in json.loads((tmp_path / "reminders.json").read_text())] == ["eat"]
+    assert [r.id for r in await _stored(db)] == ["eat"]
     assert announced == []
 
 
@@ -86,11 +99,11 @@ def _calling(tool: str, args: dict):
     return FunctionModel(model)
 
 
-async def test_tools_take_local_time_and_keep_devices_apart(tmp_path):
+async def test_tools_take_local_time_and_keep_devices_apart(db):
     async def deliver(reminder: Reminder) -> bool:
         return True
 
-    reminders = Reminders(tmp_path, deliver)
+    reminders = Reminders(db, deliver)
     agent = Agent(deps_type=TurnDeps, toolsets=[reminder_tools(reminders)])
     try:
         kitchen = TurnDeps(device="kitchen")
@@ -115,56 +128,56 @@ async def test_tools_take_local_time_and_keep_devices_apart(tmp_path):
         await reminders.stop()
 
 
-async def test_recurring_reminder_moves_to_next_time(tmp_path):
+async def test_recurring_reminder_moves_to_next_time(db):
     announced: list[Reminder] = []
 
     async def deliver(reminder: Reminder) -> bool:
         announced.append(reminder)
         return True
 
-    reminders = Reminders(tmp_path, deliver)
+    reminders = Reminders(db, deliver)
     await reminders.start()
     try:
         due = datetime.now(UTC) + timedelta(milliseconds=100)
-        reminder = reminders.add("kitchen", due, "weather", schedule="0 8-10 * * *")
+        reminder = await reminders.add("kitchen", due, "weather", schedule="0 8-10 * * *")
         await _wait_for(lambda: announced)
         await _wait_for(lambda: reminders.pending("kitchen")[0].due != due)
         (pending,) = reminders.pending("kitchen")
         assert pending.id == reminder.id
         assert pending.due == cron_next("0 8-10 * * *", datetime.now(UTC))
-        assert json.loads((tmp_path / "reminders.json").read_text())[0]["due"] == pending.model_dump(mode="json")["due"]
-        assert reminders.cancel("kitchen", reminder.id)
+        assert [r.due for r in await _stored(db)] == [pending.due]
+        assert await reminders.cancel("kitchen", reminder.id)
     finally:
         await reminders.stop()
     assert len(announced) == 1
 
 
-async def test_recurring_reminder_ends_at_until(tmp_path):
+async def test_recurring_reminder_ends_at_until(db):
     async def deliver(reminder: Reminder) -> bool:
         return True
 
-    reminders = Reminders(tmp_path, deliver)
+    reminders = Reminders(db, deliver)
     await reminders.start()
     try:
         now = datetime.now(UTC)
-        reminders.add("kitchen", now + timedelta(milliseconds=100), "x", schedule="0 8 * * *", until=now)
+        await reminders.add("kitchen", now + timedelta(milliseconds=100), "x", schedule="0 8 * * *", until=now)
         await _wait_for(lambda: not reminders.pending("kitchen"))
     finally:
         await reminders.stop()
-    assert json.loads((tmp_path / "reminders.json").read_text()) == []
+    assert await _stored(db) == []
 
 
-async def test_restart_moves_missed_recurring_to_next_time(tmp_path):
+async def test_restart_moves_missed_recurring_to_next_time(db):
     now = datetime.now(UTC)
     missed = Reminder(
         id="d", device="kitchen", due=now - timedelta(days=2), prompt="x", created=now, schedule="0 8 * * *"
     )
-    (tmp_path / "reminders.json").write_text(json.dumps([missed.model_dump(mode="json")]))
+    await _store(db, [missed])
 
     async def deliver(reminder: Reminder) -> bool:
         raise AssertionError("a missed occurrence is not announced")
 
-    reminders = Reminders(tmp_path, deliver)
+    reminders = Reminders(db, deliver)
     await reminders.start()
     await reminders.stop()
     (pending,) = reminders.pending("kitchen")
@@ -178,11 +191,11 @@ def test_cron_is_read_in_local_time():
     assert due.date() == (after + timedelta(days=1)).date()
 
 
-async def test_repeat_tool(tmp_path):
+async def test_repeat_tool(db):
     async def deliver(reminder: Reminder) -> bool:
         return True
 
-    reminders = Reminders(tmp_path, deliver)
+    reminders = Reminders(db, deliver)
     agent = Agent(deps_type=TurnDeps, toolsets=[reminder_tools(reminders)])
     kitchen = TurnDeps(device="kitchen")
     try:

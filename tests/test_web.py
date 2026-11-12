@@ -36,7 +36,7 @@ async def test_invalid_settings_are_rejected(client):
 async def test_saved_settings_survive_a_restart_and_stay_private(app_settings, client):
     response = await client.put("/api/settings", json={"tts": {"voice": "xenia"}})
     assert response.status_code == 204
-    path = app_settings.data_dir / "settings.json"
+    path = app_settings.data_dir / "sirin.db"
     assert path.stat().st_mode & 0o777 == 0o600
 
     async with _client(app_settings) as restarted:

@@ -53,7 +53,8 @@ docker compose up -d --build
 The compose file publishes port 8765 from a bridge network, where Sirin cannot see the address satellites reach it at, so set `SIRIN_PUBLIC_URL=http://<host LAN address>:8765` in `.env`; compose refuses to start without it. Settings are kept in `./data`. CI publishes a multi-arch image (amd64, arm64) to `ghcr.io/<owner>/sirin`, which the compose file pulls unless you pass `--build`.
 
 Then open `http://<host>:8765/` and fill in devices, STT, TTS, LLM and MCP servers. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
-`data/settings.json` and applied without a restart.
+the SQLite database `data/sirin.db` and applied without a restart. A `settings.json`, `reminders.json` and `oauth/`
+from an older version are imported into an empty database at start and then renamed with an `.imported` suffix.
 
 Environment variables (or `.env`):
 
@@ -68,7 +69,7 @@ Environment variables (or `.env`):
 
 The settings page has no login. Keep the port reachable only from a trusted network.
 
-MCP servers can use OAuth: turn on `oauth`, save, and press **Authorize**. The provider's login opens in a new tab and returns to `/oauth/callback` at the address you opened the settings page with. Tokens are kept in `data/oauth/` and refreshed automatically.
+MCP servers can use OAuth: turn on `oauth`, save, and press **Authorize**. The provider's login opens in a new tab and returns to `/oauth/callback` at the address you opened the settings page with. Tokens are kept in the database and refreshed automatically. The server must be saved under its current URL before you authorize it; changing its URL drops its tokens.
 
 ## Device requirements
 
@@ -108,6 +109,6 @@ Limits:
 
 ### Reminders
 
-The agent has built-in tools `set_reminder`, `list_reminders` and `cancel_reminder` ("remind me to turn off the stove in 10 minutes", "remind me tomorrow to eat", "every day at 8 tell me the weather", "every hour from 8 to 10 until Friday remind me to drink water"). A recurring reminder has a cron schedule in local time (`0 8-10 * * *`) and repeats until it is cancelled or until its end time. When it sets a reminder, the LLM writes a note to itself. At the due time the agent runs that note, with all its tools, and the device that set the reminder announces the answer. Reminders are kept in `data/reminders.json` and survive a restart. If the device is offline, the reminder is retried every 30 s for up to an hour, then dropped. Reminders that came due while the service was down are dropped at startup; a recurring reminder skips that occurrence and stays scheduled for its next time.
+The agent has built-in tools `set_reminder`, `list_reminders` and `cancel_reminder` ("remind me to turn off the stove in 10 minutes", "remind me tomorrow to eat", "every day at 8 tell me the weather", "every hour from 8 to 10 until Friday remind me to drink water"). A recurring reminder has a cron schedule in local time (`0 8-10 * * *`) and repeats until it is cancelled or until its end time. When it sets a reminder, the LLM writes a note to itself. At the due time the agent runs that note, with all its tools, and the device that set the reminder announces the answer. Reminders are kept in the database and survive a restart. If the device is offline, the reminder is retried every 30 s for up to an hour, then dropped. Reminders that came due while the service was down are dropped at startup; a recurring reminder skips that occurrence and stays scheduled for its next time.
 
 Times are in the process's local time zone, the same one `now()` in the system prompt uses. In the container, set it with `TZ` (see `docker-compose.yml`).

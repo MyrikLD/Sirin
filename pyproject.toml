@@ -18,6 +18,9 @@ dependencies = [
     "onnxruntime>=1.31.1",
     "numpy>=2.5.4",
     "cronsim>=2.8",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.21",
+    "alembic>=1.16",
 ]
 
 [project.scripts]

@@ -27,10 +27,10 @@ async def _until(changed: asyncio.Event, condition) -> None:
             await changed.wait()
 
 
-async def test_mcp_server_is_retried_after_a_failure_and_a_lost_connection(tmp_path, monkeypatch):
+async def test_mcp_server_is_retried_after_a_failure_and_a_lost_connection(db, monkeypatch):
     lost_callbacks = []
 
-    def build(server, oauth, auth=None, on_lost=None):
+    async def build(server, oauth, auth=None, on_lost=None):
         lost_callbacks.append(on_lost)
         if len(lost_callbacks) == 1:
             raise ConnectionError("down")
@@ -39,7 +39,7 @@ async def test_mcp_server_is_retried_after_a_failure_and_a_lost_connection(tmp_p
     monkeypatch.setattr(agent_module, "build_toolset", build)
     monkeypatch.setattr(agent_module, "RECONNECT_MIN_S", 0.01)
     changed = asyncio.Event()
-    agent = Agent(LLMConfig(), [SERVER], OAuthManager(tmp_path, _ignore), changed.set, [])
+    agent = Agent(LLMConfig(), [SERVER], OAuthManager(db, _ignore), changed.set, [])
     try:
         await agent.start()
         assert agent.tool_status["home"].state == "error"

@@ -5,7 +5,6 @@ from jinja2 import TemplateSyntaxError
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from sirin.files import write_private
 from sirin.prompt import compile_prompt
 
 # Schema extensions the settings page renders from.
@@ -149,16 +148,3 @@ class RuntimeSettings(BaseModel):
             if len(names) != len(set(names)):
                 raise ValueError(f"{kind} names must be unique")
         return self
-
-
-class SettingsStore:
-    def __init__(self, data_dir: Path) -> None:
-        self._path = data_dir / "settings.json"
-
-    def load(self) -> RuntimeSettings:
-        if not self._path.exists():
-            return RuntimeSettings()
-        return RuntimeSettings.model_validate_json(self._path.read_text())
-
-    def save(self, settings: RuntimeSettings) -> None:
-        write_private(self._path, settings.model_dump_json(indent=2))

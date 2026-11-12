@@ -3,11 +3,14 @@ import logging
 
 from sirin.agent import Agent
 from sirin.clips import ClipStore
-from sirin.config import AppSettings, RuntimeSettings, SettingsStore
+from sirin.config import AppSettings, RuntimeSettings
+from sirin.database import Database
+from sirin.legacy import import_files
 from sirin.oauth import OAuthManager
 from sirin.pipeline import Services
 from sirin.reminders import Reminder, Reminders, reminder_tools
 from sirin.satellite import Satellite
+from sirin.settings_store import SettingsStore
 from sirin.speech import SpeechToText, TextToSpeech
 from sirin.status import Status, StatusBoard
 from sirin.vad import SileroModel
@@ -26,11 +29,13 @@ class Runtime:
     def __init__(self, app_settings: AppSettings) -> None:
         public_url = str(app_settings.public_url) if app_settings.public_url else None
         self.clips = ClipStore(public_url, app_settings.port, app_settings.audio_ttl_s)
-        self.oauth = OAuthManager(app_settings.data_dir, self._on_authorized)
+        self._data_dir = app_settings.data_dir
+        self.db = Database.in_dir(app_settings.data_dir)
+        self.oauth = OAuthManager(self.db, self._on_authorized)
         self.board = StatusBoard()
-        self._store = SettingsStore(app_settings.data_dir)
+        self._store = SettingsStore(self.db)
         self._vad_model = SileroModel(app_settings.vad_model)
-        self.reminders = Reminders(app_settings.data_dir, self._deliver_reminder)
+        self.reminders = Reminders(self.db, self._deliver_reminder)
         self.voices: Voices | None = None
         if app_settings.voice_models.is_dir():
             self.voices = Voices(app_settings.data_dir, VoiceModels.load(app_settings.voice_models))
@@ -43,13 +48,15 @@ class Runtime:
         self.settings = RuntimeSettings()
 
     async def start(self) -> None:
+        await self.db.migrate()
+        await import_files(self.db, self._data_dir)
         async with self._lock:
-            await self._apply(self._store.load(), reconnect_tools=False)
+            await self._apply(await self._store.load(), reconnect_tools=False)
         await self.reminders.start()
 
     async def apply(self, settings: RuntimeSettings) -> None:
         """Saves the settings and rebuilds what they changed."""
-        self._store.save(settings)
+        await self._store.save(settings)
         async with self._lock:
             await self._apply(settings, reconnect_tools=False)
 
@@ -116,6 +123,7 @@ class Runtime:
         await self.reminders.stop()
         async with self._lock:
             await self._stop()
+        await self.db.close()
 
     def status(self) -> Status:
         return Status(

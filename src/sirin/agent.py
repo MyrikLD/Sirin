@@ -128,7 +128,7 @@ class Agent:
         while True:
             lost: asyncio.Queue[Exception] = asyncio.Queue()
             try:
-                async with build_toolset(server, self._oauth, on_lost=lost.put_nowait) as toolset:
+                async with await build_toolset(server, self._oauth, on_lost=lost.put_nowait) as toolset:
                     count = len(await toolset.list_tools())
                     self._live[server.name] = toolset.prefixed(server.name)
                     _log.info("MCP server %s: %d tools", server.name, count)
@@ -233,7 +233,7 @@ async def explain_connect_error(server: McpServerConfig, exc: Exception) -> str:
     return reason
 
 
-def build_toolset(
+async def build_toolset(
     server: McpServerConfig,
     oauth: OAuthManager,
     auth: OAuthClientProvider | None = None,
@@ -241,7 +241,7 @@ def build_toolset(
 ) -> IsolatedToolset:
     """auth overrides the stored-token OAuth provider, for the login flow itself."""
     if server.oauth and auth is None:
-        auth = oauth.provider(server)
+        auth = await oauth.provider(server)
     mcp = MCPToolset(server.url, id=server.name, headers=server.headers or None, auth=auth)
     return IsolatedToolset(mcp, on_lost)
 
@@ -250,5 +250,5 @@ async def list_server_tools(
     server: McpServerConfig, oauth: OAuthManager, auth: OAuthClientProvider | None = None
 ) -> list[Tool]:
     """Connects once and lists the server's tools."""
-    async with build_toolset(server, oauth, auth) as toolset:
+    async with await build_toolset(server, oauth, auth) as toolset:
         return await toolset.list_tools()

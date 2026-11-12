@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from sirin.config import AppSettings
+from sirin.database import Database
 from sirin.vad import SileroModel
 
 # Same release and hash as the Dockerfile.
@@ -40,3 +41,11 @@ def app_settings(tmp_path, vad_model_path) -> AppSettings:
         vad_model=vad_model_path,
         voice_models=tmp_path / "voices",
     )
+
+
+@pytest.fixture
+async def db():
+    database = Database("sqlite+aiosqlite:///:memory:")
+    await database.migrate()
+    yield database
+    await database.close()

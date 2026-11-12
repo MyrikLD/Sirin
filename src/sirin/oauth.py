@@ -1,13 +1,11 @@
 import asyncio
-import hashlib
-import json
 import logging
-import time
 from collections.abc import Awaitable, Callable
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 import httpx2
+import sqlalchemy as sa
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
@@ -24,9 +22,11 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 from pydantic import AnyUrl
+from sqlalchemy.dialects.sqlite import insert
 
 from sirin.config import McpServerConfig
-from sirin.files import write_private
+from sirin.database import Database
+from sirin.tables import McpServer, McpToken
 
 _log = logging.getLogger(__name__)
 
@@ -41,61 +41,88 @@ class OAuthRequired(RuntimeError):
         super().__init__(f"OAuth authorization required: press Authorize for {server!r}")
 
 
-class FileTokenStorage(TokenStorage):
-    """Tokens, the registered client and the server metadata of one MCP server, in one JSON file."""
+class ServerNotSaved(RuntimeError):
+    def __init__(self, server: str) -> None:
+        super().__init__(f"MCP server {server!r} is not saved with this URL: save the settings first")
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
+
+class DbTokenStorage(TokenStorage):
+    """The `mcp_tokens` row of one shared MCP server, found by its name and URL.
+
+    A server not saved under that name and URL has no stored state; storing for it fails.
+    """
+
+    def __init__(self, db: Database, server: McpServerConfig) -> None:
+        self._db = db
+        self._server = server
 
     async def get_tokens(self) -> OAuthToken | None:
-        data = self.read()
-        if "tokens" not in data:
+        row = await self.read()
+        if row is None or row.tokens is None:
             return None
-        tokens = OAuthToken.model_validate(data["tokens"])
-        if (expires_at := data.get("expires_at")) is not None:
-            tokens.expires_in = max(0, int(expires_at - time.time()))
+        tokens = OAuthToken.model_validate(row.tokens)
+        if row.expires_at is not None:
+            tokens.expires_in = max(0, int((row.expires_at - datetime.now(UTC)).total_seconds()))
         return tokens
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        data = self.read()
-        data["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
-        data["expires_at"] = time.time() + tokens.expires_in if tokens.expires_in is not None else None
-        self._write(data)
+        expires_at = datetime.now(UTC) + timedelta(seconds=tokens.expires_in) if tokens.expires_in is not None else None
+        await self._write(tokens=tokens.model_dump(mode="json", exclude_none=True), expires_at=expires_at)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        data = self.read()
-        return OAuthClientInformationFull.model_validate(data["client"]) if "client" in data else None
+        row = await self.read()
+        if row is None or row.client_info is None:
+            return None
+        return OAuthClientInformationFull.model_validate(row.client_info)
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        data = self.read()
-        data["client"] = client_info.model_dump(mode="json", exclude_none=True)
-        self._write(data)
+        await self._write(client_info=client_info.model_dump(mode="json", exclude_none=True))
 
     async def server_metadata(self, server_url: str) -> OAuthMetadata | None:
         """The stored authorization server metadata, discovered and stored on first use."""
-        data = self.read()
-        if "server_metadata" in data:
-            return OAuthMetadata.model_validate(data["server_metadata"])
+        row = await self.read()
+        if row is not None and row.server_metadata is not None:
+            return OAuthMetadata.model_validate(row.server_metadata)
         metadata = await _discover_server_metadata(server_url)
         if metadata is not None:
-            data["server_metadata"] = metadata.model_dump(mode="json", exclude_none=True)
-            self._write(data)
+            await self._write(server_metadata=metadata.model_dump(mode="json", exclude_none=True))
         return metadata
 
-    def read(self) -> dict:
-        return json.loads(self._path.read_text()) if self._path.exists() else {}
+    async def read(self) -> sa.Row | None:
+        async with self._db.session() as session:
+            rows = await session.execute(
+                sa.select(McpToken.tokens, McpToken.expires_at, McpToken.client_info, McpToken.server_metadata)
+                .join(McpServer, McpServer.id == McpToken.server_id)
+                .where(*self._server_is())
+            )
+            return rows.one_or_none()
 
-    def reset(self) -> None:
-        self._path.unlink(missing_ok=True)
+    async def server_id(self) -> int | None:
+        async with self._db.session() as session:
+            return await session.scalar(sa.select(McpServer.id).where(*self._server_is()))
 
-    def _write(self, data: dict) -> None:
-        write_private(self._path, json.dumps(data, indent=2))
+    async def reset(self) -> None:
+        async with self._db.session() as session, session.begin():
+            server_id = sa.select(McpServer.id).where(*self._server_is()).scalar_subquery()
+            await session.execute(sa.delete(McpToken).where(McpToken.server_id == server_id))
+
+    async def _write(self, **values: object) -> None:
+        if (server_id := await self.server_id()) is None:
+            raise ServerNotSaved(self._server.name)
+        async with self._db.session() as session, session.begin():
+            stmt = insert(McpToken).values(server_id=server_id, **values)
+            await session.execute(stmt.on_conflict_do_update(index_elements=[McpToken.server_id], set_=values))
+
+    def _server_is(self) -> list[sa.ColumnElement[bool]]:
+        # Name and URL: a server pointed at another URL has its tokens dropped when saved, and until then
+        # its unsaved URL must not reach the tokens of the old one.
+        return [McpServer.owner_id.is_(None), McpServer.name == self._server.name, McpServer.url == self._server.url]
 
 
 class _Provider(OAuthClientProvider):
-    def __init__(self, *, storage: FileTokenStorage, **kwargs) -> None:
+    def __init__(self, *, storage: DbTokenStorage, **kwargs) -> None:
         super().__init__(storage=storage, **kwargs)
-        self._file_storage = storage
+        self._stored = storage
 
     async def _initialize(self) -> None:
         await super()._initialize()
@@ -106,7 +133,7 @@ class _Provider(OAuthClientProvider):
         # After a restart the SDK knows no server metadata and refreshes at <origin>/token, which is
         # wrong for servers like Home Assistant (/auth/token); the refresh fails and asks for a login.
         if self.context.oauth_metadata is None:
-            self.context.oauth_metadata = await self._file_storage.server_metadata(self.context.server_url)
+            self.context.oauth_metadata = await self._stored.server_metadata(self.context.server_url)
 
 
 class _Flow:
@@ -124,16 +151,16 @@ class OAuthManager:
     only refresh tokens and fail with OAuthRequired until the user authorizes from the page.
     """
 
-    def __init__(self, data_dir: Path, on_authorized: Callable[[str], Awaitable[None]]) -> None:
-        self._dir = data_dir / "oauth"
+    def __init__(self, db: Database, on_authorized: Callable[[str], Awaitable[None]]) -> None:
+        self._db = db
         self._on_authorized = on_authorized
         self._flows: dict[str, _Flow] = {}
         self._tasks: set[asyncio.Task[None]] = set()
 
-    def provider(self, server: McpServerConfig) -> OAuthClientProvider:
-        data = self._storage(server).read()
-        redirect_uris = data.get("client", {}).get("redirect_uris")
-        if "tokens" not in data or not redirect_uris:
+    async def provider(self, server: McpServerConfig) -> OAuthClientProvider:
+        row = await self._storage(server).read()
+        redirect_uris = (row.client_info or {}).get("redirect_uris") if row is not None else None
+        if row is None or row.tokens is None or not redirect_uris:
             raise OAuthRequired(server.name)
 
         async def refuse(_: str) -> None:
@@ -155,10 +182,13 @@ class OAuthManager:
         connect opens the server with the given provider; it must run outside the caller's task.
         """
         storage = self._storage(server)
-        registered = storage.read().get("client", {}).get("redirect_uris")
+        row = await storage.read()
+        if row is None and await storage.server_id() is None:
+            raise ServerNotSaved(server.name)
+        registered = (row.client_info or {}).get("redirect_uris") if row is not None else None
         if registered and redirect_uri not in registered:
             # The client was set up for another address of this service; the provider would reject it.
-            storage.reset()
+            await storage.reset()
         await self._preregister(server, redirect_uri)
         flow = _Flow()
 
@@ -246,10 +276,8 @@ class OAuthManager:
         )
         _log.info("MCP server %s has no client registration; using client id %s", server.name, client_id)
 
-    def _storage(self, server: McpServerConfig) -> FileTokenStorage:
-        # Keyed by name and URL, so pointing a server at another URL starts from a clean login.
-        key = hashlib.sha256(f"{server.name}\n{server.url}".encode()).hexdigest()[:16]
-        return FileTokenStorage(self._dir / f"{key}.json")
+    def _storage(self, server: McpServerConfig) -> DbTokenStorage:
+        return DbTokenStorage(self._db, server)
 
 
 def _origin(url: str) -> str:

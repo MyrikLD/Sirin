@@ -4,16 +4,17 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
+import sqlalchemy as sa
 from cronsim import CronSim, CronSimError
-from pydantic import AwareDatetime, BaseModel, TypeAdapter
+from pydantic import AwareDatetime, BaseModel
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import FunctionToolset
 
+from sirin import tables
 from sirin.agent import TurnDeps
-from sirin.files import write_private
+from sirin.database import Database
 
 _log = logging.getLogger(__name__)
 
@@ -61,37 +62,42 @@ def cron_next(schedule: str, after: datetime) -> datetime:
 # True once announced, False if the device cannot take it now and the reminder should be retried.
 Deliver = Callable[[Reminder], Awaitable[bool]]
 
-_reminder_list = TypeAdapter(list[Reminder])
+_COLUMNS = [getattr(tables.Reminder, name) for name in Reminder.model_fields]
+
+
+def _set_due(reminder: Reminder) -> sa.Update:
+    return sa.update(tables.Reminder).where(tables.Reminder.id == reminder.id).values(due=reminder.due)
 
 
 class Reminders:
-    """Pending reminders, kept in data/reminders.json so they survive a restart; one task waits for each."""
+    """Pending reminders, kept in the `reminders` table so they survive a restart; one task waits for each."""
 
-    def __init__(self, data_dir: Path, deliver: Deliver, retry_s: float = 30) -> None:
-        self._path = data_dir / "reminders.json"
+    def __init__(self, db: Database, deliver: Deliver, retry_s: float = 30) -> None:
+        self._db = db
         self._deliver = deliver
         self._retry_s = retry_s
         self._items: dict[str, Reminder] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     async def start(self) -> None:
-        if not self._path.exists():
-            return
-        saved = _reminder_list.validate_json(self._path.read_text())
-        now = datetime.now(UTC)
-        changed = False
-        for reminder in saved:
-            if reminder.due <= now:
-                changed = True
-                if (due := reminder.next_due(now)) is None:
-                    _log.warning("reminder %s for %s is dropped: missed while down", reminder.id, reminder.device)
-                    continue
-                _log.warning("reminder %s for %s skips an occurrence missed while down", reminder.id, reminder.device)
-                reminder = reminder.model_copy(update={"due": due})
-            self._items[reminder.id] = reminder
+        async with self._db.session() as session, session.begin():
+            rows = await session.execute(sa.select(*_COLUMNS))
+            now = datetime.now(UTC)
+            for row in rows.mappings().all():
+                reminder = Reminder.model_validate(dict(row))
+                if reminder.due <= now:
+                    if (due := reminder.next_due(now)) is None:
+                        _log.warning("reminder %s for %s is dropped: missed while down", reminder.id, reminder.device)
+                        await session.execute(sa.delete(tables.Reminder).where(tables.Reminder.id == reminder.id))
+                        continue
+                    _log.warning(
+                        "reminder %s for %s skips an occurrence missed while down", reminder.id, reminder.device
+                    )
+                    reminder = reminder.model_copy(update={"due": due})
+                    await session.execute(_set_due(reminder))
+                self._items[reminder.id] = reminder
+        for reminder in self._items.values():
             self._schedule(reminder)
-        if changed:
-            self._save()
 
     async def stop(self) -> None:
         tasks = list(self._tasks.values())
@@ -99,7 +105,7 @@ class Reminders:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    def add(
+    async def add(
         self, device: str, due: datetime, prompt: str, schedule: str | None = None, until: datetime | None = None
     ) -> Reminder:
         reminder = Reminder(
@@ -111,20 +117,21 @@ class Reminders:
             schedule=schedule,
             until=until,
         )
+        async with self._db.session() as session, session.begin():
+            await session.execute(sa.insert(tables.Reminder).values(**reminder.model_dump()))
         self._items[reminder.id] = reminder
-        self._save()
         self._schedule(reminder)
         return reminder
 
     def pending(self, device: str) -> list[Reminder]:
         return sorted((r for r in self._items.values() if r.device == device), key=lambda r: r.due)
 
-    def cancel(self, device: str, reminder_id: str) -> bool:
+    async def cancel(self, device: str, reminder_id: str) -> bool:
         """Its task is left to find the reminder gone: the task may be the very run that calls this."""
         reminder = self._items.get(reminder_id)
         if reminder is None or reminder.device != device:
             return False
-        self._remove(reminder_id)
+        await self._remove(reminder_id)
         return True
 
     def _schedule(self, reminder: Reminder) -> None:
@@ -132,12 +139,12 @@ class Reminders:
         self._tasks[reminder.id] = task
         task.add_done_callback(lambda _: self._tasks.pop(reminder.id, None))
 
-    def _remove(self, reminder_id: str) -> None:
-        if self._items.pop(reminder_id, None) is not None:
-            self._save()
-
-    def _save(self) -> None:
-        write_private(self._path, _reminder_list.dump_json(list(self._items.values()), indent=2).decode())
+    # The database is written before _items, so what pending() shows is always stored.
+    async def _remove(self, reminder_id: str) -> None:
+        if reminder_id in self._items:
+            async with self._db.session() as session, session.begin():
+                await session.execute(sa.delete(tables.Reminder).where(tables.Reminder.id == reminder_id))
+            self._items.pop(reminder_id, None)
 
     async def _run(self, reminder: Reminder) -> None:
         # A recurring reminder keeps this one task: a new task under the same id would be popped by this one's callback.
@@ -147,11 +154,12 @@ class Reminders:
             if current is None:
                 return
             if (due := current.next_due(datetime.now(UTC))) is None:
-                self._remove(reminder.id)
+                await self._remove(reminder.id)
                 return
             reminder = current.model_copy(update={"due": due})
+            async with self._db.session() as session, session.begin():
+                await session.execute(_set_due(reminder))
             self._items[reminder.id] = reminder
-            self._save()
 
     async def _occur(self, reminder: Reminder) -> None:
         """Waits for the due time and announces this occurrence, retrying while the device is offline."""
@@ -234,7 +242,7 @@ def reminder_tools(reminders: Reminders) -> FunctionToolset[TurnDeps]:
             raise ModelRetry("Give exactly one of in_minutes and at.")
         if due <= now:
             raise ModelRetry(f"{due:%Y-%m-%d %H:%M} is in the past; the local time is {now:%Y-%m-%d %H:%M}.")
-        reminder = reminders.add(ctx.deps.device, due.astimezone(UTC), prompt, repeat, end)
+        reminder = await reminders.add(ctx.deps.device, due.astimezone(UTC), prompt, repeat, end)
         first = f"{due.astimezone():%Y-%m-%d %H:%M, %A}"
         if repeat is not None:
             ends = f", until {end:%Y-%m-%d %H:%M}" if end is not None else ""
@@ -254,7 +262,7 @@ def reminder_tools(reminders: Reminders) -> FunctionToolset[TurnDeps]:
     @tools.tool
     async def cancel_reminder(ctx: RunContext[TurnDeps], reminder_id: str) -> str:
         """Cancels a pending reminder of this device, a recurring one for good; the id comes from list_reminders."""
-        if not reminders.cancel(ctx.deps.device, reminder_id):
+        if not await reminders.cancel(ctx.deps.device, reminder_id):
             raise ModelRetry(f"There is no reminder {reminder_id}; call list_reminders.")
         return f"Reminder {reminder_id} is cancelled."
 
