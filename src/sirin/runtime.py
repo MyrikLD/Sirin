@@ -1,11 +1,13 @@
 import asyncio
 import logging
+from datetime import timedelta
 
 from sirin.accounts import FIRST_ADMIN_LOGIN, ensure_admin
 from sirin.agent import Agent
 from sirin.clips import ClipStore
 from sirin.config import AppSettings, RuntimeSettings
 from sirin.database import Database
+from sirin.history import History
 from sirin.oauth import OAuthManager
 from sirin.pipeline import Services
 from sirin.reminders import Reminder, Reminders, reminder_tools
@@ -41,6 +43,7 @@ class Runtime:
             _log.info("voices are recognized: %s", ", ".join(self.voices.names) or "none remembered yet")
         else:
             _log.warning("voices are not recognized: no voice models at %s", app_settings.voice_models)
+        self.history = History(self.db, self.voices.embed if self.voices is not None else None)
         self._lock = asyncio.Lock()
         self._services: Services | None = None
         self._satellites: list[Satellite] = []
@@ -55,6 +58,7 @@ class Runtime:
         async with self._lock:
             await self._apply(await self._store.load(), reconnect_tools=False)
         await self.reminders.start()
+        await self.history.start()
 
     async def apply(self, settings: RuntimeSettings) -> None:
         """Saves the settings and rebuilds what they changed."""
@@ -94,7 +98,9 @@ class Runtime:
             vad=settings.vad,
             vad_model=self._vad_model,
             voices=self.voices,
+            history=self.history,
         )
+        self.history.retention = timedelta(days=settings.history.retention_days)
 
         running = {s.cfg.name: s for s in self._satellites}
         satellites = []
@@ -123,8 +129,10 @@ class Runtime:
 
     async def stop(self) -> None:
         await self.reminders.stop()
+        self.history.close()
         async with self._lock:
             await self._stop()
+        await self.history.stop()
         await self.db.close()
 
     def status(self) -> Status:

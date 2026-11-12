@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 from aioesphomeapi import VoiceAssistantEventType as Ev
 
+from sirin.agent import ToolCall
 from sirin.clips import ClipStore
+from sirin.history import History, list_turns
 from sirin.pipeline import SILENCE, PipelineRun
 
 
@@ -20,9 +22,12 @@ class _Agent:
         self._answer = answer
         self._fails = fails
         self.heard: list[str] = []
+        self.turns: list = []
 
     async def stream_reply(self, conversation_id: str, text: str, turn):
         self.heard.append(text)
+        self.turns.append(turn)
+        turn.calls.append(ToolCall(name="light_on", args={"room": "kitchen"}, result="done"))
         yield self._answer
         if self._fails:
             raise ConnectionError("LLM is down")
@@ -40,14 +45,14 @@ class _Tts:
 
 
 async def _run(
-    monkeypatch, agent: _Agent, heard: str = "turn on the light", answers_question: bool = False
+    monkeypatch, agent: _Agent, heard: str = "turn on the light", answers_question: bool = False, history=None
 ) -> tuple[_Client, _Tts]:
     async def listen(self) -> str:
         return heard
 
     monkeypatch.setattr(PipelineRun, "_listen", listen)
     client, tts = _Client(), _Tts()
-    services = SimpleNamespace(agent=agent, tts=tts, clips=ClipStore("http://sirin", 8765, 300))
+    services = SimpleNamespace(agent=agent, tts=tts, clips=ClipStore("http://sirin", 8765, 300), history=history)
     await PipelineRun(client, services, "c", "kitchen", "http://sirin", answers_question).run()
     return client, tts
 
@@ -93,3 +98,29 @@ async def test_silence_after_the_wake_word_is_an_error(monkeypatch):
     client, _ = await _run(monkeypatch, agent, heard="")
     assert agent.heard == []
     assert Ev.VOICE_ASSISTANT_ERROR in dict(client.events)
+
+
+async def test_the_turn_is_kept_in_the_history(monkeypatch, db):
+    history = History(db, embed=None)
+    watched = history.watch()
+    agent = _Agent("Done.", fails=True, error_reply="Sorry.")
+    await _run(monkeypatch, agent, history=history)
+    await history.stop()
+
+    async with db.session() as session:
+        (turn,) = await list_turns(session)
+    assert agent.turns[0].turn_id == turn.id
+    assert (turn.device, turn.text, turn.answer) == ("kitchen", "turn on the light", "Done. Sorry.")
+    assert [call.name for call in turn.tools] == ["light_on"]
+    assert turn.error == "agent: ConnectionError: LLM is down"
+    assert {"heard", "first_text", "first_audio", "done"} <= turn.timings.keys()
+    # Once when heard, once when answered.
+    assert [watched.get_nowait(), watched.get_nowait()] == [turn.id, turn.id]
+
+
+async def test_a_run_that_heard_nothing_is_not_kept(monkeypatch, db):
+    history = History(db, embed=None)
+    await _run(monkeypatch, _Agent("Hello."), heard="", history=history)
+    await history.stop()
+    async with db.session() as session:
+        assert await list_turns(session) == []

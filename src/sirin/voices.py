@@ -285,6 +285,10 @@ class Voices:
             key = max(scores, key=scores.__getitem__)
             return self._voices[key].name, scores[key]
 
+    def embed(self, speech: np.ndarray) -> np.ndarray:
+        """The speaker embedding of speech, a unit vector."""
+        return self._models.speaker.embed(speech)
+
     def identify(self, speech: np.ndarray) -> str | None:
         """The name of the remembered voice that speech is in, if any."""
         closest = self.closest(speech)

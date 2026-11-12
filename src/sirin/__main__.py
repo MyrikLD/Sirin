@@ -11,20 +11,22 @@ from pydantic import ValidationError
 from sirin.accounts import reset_password
 from sirin.config import AppSettings
 from sirin.database import Database
-from sirin.status import StatusBoard
+from sirin.runtime import Runtime
 from sirin.web import create_app
 
 
 class _Server(uvicorn.Server):
-    """Closes the status streams on the exit signal; otherwise shutdown would wait for every open settings page."""
+    """Closes the status and history streams on the exit signal; otherwise shutdown would wait for every open page."""
 
-    def __init__(self, config: uvicorn.Config, board: StatusBoard) -> None:
+    def __init__(self, config: uvicorn.Config, runtime: Runtime) -> None:
         super().__init__(config)
-        self._board = board
+        self._runtime = runtime
 
     def handle_exit(self, sig: int, frame: FrameType | None) -> None:
         super().handle_exit(sig, frame)
-        asyncio.get_event_loop().call_soon_threadsafe(self._board.close)
+        loop = asyncio.get_event_loop()
+        loop.call_soon_threadsafe(self._runtime.board.close)
+        loop.call_soon_threadsafe(self._runtime.history.close)
 
 
 async def _reset_password(settings: AppSettings, login: str) -> None:
@@ -66,7 +68,7 @@ def main() -> None:
     config = uvicorn.Config(app, host=settings.host, port=settings.port, log_config=None, timeout_graceful_shutdown=3)
     # uvicorn re-raises the exit signal once shut down; uvicorn.run() swallows it the same way.
     with contextlib.suppress(KeyboardInterrupt):
-        _Server(config, app.state.runtime.board).run()
+        _Server(config, app.state.runtime).run()
 
 
 if __name__ == "__main__":

@@ -55,3 +55,11 @@ button.remove { padding: 2px 8px; }
 .notice { color: var(--muted); }
 .login { max-width: 340px; margin: 12vh auto 0; }
 .login .field { grid-template-columns: 1fr; }
+.tabs { display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--border); }
+.tabs a { padding: 6px 14px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+.filters select, .filters input { width: auto; flex: 1 1 140px; }
+.turn > summary .hint { white-space: nowrap; }
+.turn > summary .name { font-family: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn .field > div { padding-top: 6px; overflow-wrap: anywhere; }

@@ -96,6 +96,29 @@ class McpToken(Base):
     server_metadata = sa.Column(sa.JSON, nullable=True)
 
 
+class Turn(Base):
+    """One utterance and its answer: the history."""
+
+    __tablename__ = "turns"
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    started_at = sa.Column(UtcDateTime, nullable=False, index=True)
+    device = sa.Column(sa.String, nullable=False)
+    conversation_id = sa.Column(sa.String, nullable=False)
+    # Similarity with the closest remembered voice; NULL when nothing was compared.
+    similarity = sa.Column(sa.Float, nullable=True)
+    # The speaker embedding of the whole turn, float32; NULL without voice models or with too little speech.
+    embedding = sa.Column(sa.LargeBinary, nullable=True)
+    speech_ms = sa.Column(sa.Integer, nullable=True)
+    # Empty when a question was met with silence.
+    text = sa.Column(sa.Text, nullable=False)
+    answer = sa.Column(sa.Text, nullable=True)
+    tools = sa.Column(sa.JSON, nullable=False)
+    # Milliseconds from the start of the run to each stage.
+    timings = sa.Column(sa.JSON, nullable=False)
+    error = sa.Column(sa.Text, nullable=True)
+
+
 class Reminder(Base):
     __tablename__ = "reminders"
 
@@ -106,3 +129,5 @@ class Reminder(Base):
     created = sa.Column(UtcDateTime, nullable=False)
     schedule = sa.Column(sa.String, nullable=True)
     until = sa.Column(UtcDateTime, nullable=True)
+    # The turn that set it; history retention keeps that turn while the reminder is pending.
+    turn_id = sa.Column(sa.Integer, sa.ForeignKey("turns.id", ondelete="SET NULL"), nullable=True)

@@ -9,13 +9,18 @@
 <body>
 <main>
   <header class="top"><h1>Sirin</h1><div id="account" class="account"></div></header>
-  <form id="form"></form>
-  <div id="extra"></div>
+  <nav id="tabs" class="tabs"></nav>
+  <div id="settings-view" hidden>
+    <form id="form"></form>
+    <div id="extra"></div>
+  </div>
+  <div id="history-view" hidden></div>
 </main>
 <div class="bar" id="bar" hidden><div><button class="primary" id="save">Save and apply</button><span id="msg"></span></div></div>
 <script type="module">
 import { api, el } from "./lib.js";
 import { accountBar, peopleCard } from "./account.js";
+import { historyView } from "./history.js";
 
 // The form is rendered from the RuntimeSettings JSON schema and its x- extensions (see config.py):
 // x-choices (dropdown), x-probe (Test button endpoint), x-authorize (Authorize button endpoint),
@@ -243,14 +248,37 @@ function collect(getters) {
 
 
 
+// One view at a time, chosen by the URL hash so a reload keeps it.
+function showTabs(views) {
+  const nav = document.getElementById("tabs");
+  const show = () => {
+    const current = views.find(v => `#${v.id}` === location.hash) || views[0];
+    for (const v of views) {
+      document.getElementById(`${v.id}-view`).hidden = v !== current;
+      v.button.classList.toggle("active", v === current);
+      v.onShow?.(v === current);
+    }
+  };
+  for (const v of views) v.button = el("a", { href: `#${v.id}` }, v.title);
+  nav.replaceChildren(...views.map(v => v.button));
+  nav.hidden = views.length < 2;
+  window.addEventListener("hashchange", show);
+  show();
+}
+
 (async () => {
   const me = await api("/api/auth/me");
   document.getElementById("account").replaceChildren(accountBar(me));
+  document.getElementById("history-view").replaceChildren(historyView());
   if (me.role !== "admin") {
-    document.getElementById("form").replaceChildren(el("section", { class: "card notice" }, "Settings are for the admin."));
+    showTabs([{ id: "history", title: "History" }]);
     return;
   }
-  document.getElementById("bar").hidden = false;
+  const bar = document.getElementById("bar");
+  showTabs([
+    { id: "settings", title: "Settings", onShow: (shown) => { bar.hidden = !shown; } },
+    { id: "history", title: "History" },
+  ]);
   document.getElementById("extra").replaceChildren(peopleCard(me));
   schema = await api("/api/settings/schema");
   defs = schema.$defs || {};

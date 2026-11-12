@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import re
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from aioesphomeapi import APIClient, APIConnectionError
 from aioesphomeapi import VoiceAssistantEventType as Ev
@@ -10,6 +12,7 @@ from aioesphomeapi import VoiceAssistantEventType as Ev
 from sirin.agent import Agent, TurnDeps
 from sirin.clips import ClipStore, LiveClip
 from sirin.config import VadConfig
+from sirin.history import History
 from sirin.speech import SpeechToText, TextToSpeech
 from sirin.vad import SAMPLE_RATE, Endpointer, SileroModel, VadEvent
 from sirin.voices import SpeakerGate, Voices
@@ -32,6 +35,7 @@ class Services:
     vad_model: SileroModel
     # None when the voice models are not installed: nobody is recognized and all audio is recognized as it comes.
     voices: Voices | None = None
+    history: History | None = None
 
 
 class PipelineError(Exception):
@@ -67,6 +71,13 @@ class PipelineRun:
         self.awaits_reply = False
         self._audio: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._turn = TurnDeps(device=device)
+        # What the history keeps of this run.
+        self._started = time.monotonic()
+        self._started_at = datetime.now(UTC)
+        self._timings: dict[str, int] = {}
+        self._similarity: float | None = None
+        self._spoken = ""
+        self._error: str | None = None
 
     def feed(self, chunk: bytes) -> None:
         self._audio.put_nowait(chunk)
@@ -75,11 +86,15 @@ class PipelineRun:
         self._audio.put_nowait(None)
 
     async def run(self) -> None:
+        self._started, self._started_at = time.monotonic(), datetime.now(UTC)
         clip, url = self._s.clips.create(self._audio_base_url)
         # The URL is announced up front so the device can start playback before synthesis ends.
         self._send(Ev.VOICE_ASSISTANT_RUN_START, {"url": url})
         try:
             await self._run(clip, url)
+        except asyncio.CancelledError:
+            self._error = "cancelled: the device started another run or stopped this one"
+            raise
         except Exception as exc:
             # A stage that fails inside a TaskGroup arrives as a group; its first member is the cause.
             while isinstance(exc, ExceptionGroup):
@@ -91,25 +106,49 @@ class PipelineRun:
                 code = "pipeline-error"
                 _log.error("[%s] pipeline failed", self._device, exc_info=exc)
             self._send(Ev.VOICE_ASSISTANT_ERROR, {"code": code, "message": str(exc)[:200]})
+            self._error = f"{code}: {exc}"
         finally:
+            self._mark("done")
+            if self._s.history is not None and self._turn.turn_id is not None:
+                self._s.history.close_turn(
+                    self._turn.turn_id, self._spoken, self._turn.calls, self._timings, self._error, self._turn.speech
+                )
             await clip.close()
             self._send(Ev.VOICE_ASSISTANT_RUN_END)
+
+    def _mark(self, stage: str) -> None:
+        """Times stage from the start of the run; the first time counts."""
+        self._timings.setdefault(stage, round((time.monotonic() - self._started) * 1000))
 
     async def _run(self, clip: LiveClip, url: str) -> None:
         self._send(Ev.VOICE_ASSISTANT_STT_START)
         heard = await self._listen()
+        self._mark("heard")
         if heard:
             self._send(Ev.VOICE_ASSISTANT_STT_END, {"text": heard})
         elif not self._answers_question:
             raise PipelineError("stt-no-text-recognized", "No text recognized")
         # Silence after a question is an answer too: the agent decides what follows from it.
         text = heard or SILENCE
+        if self._s.history is not None:
+            speech = self._turn.speech
+            turn_id = await self._s.history.open_turn(
+                self._device,
+                self._conversation_id,
+                self._started_at,
+                heard,
+                self._similarity,
+                round(len(speech) * 1000 / SAMPLE_RATE) if speech is not None else None,
+            )
+            self._turn = self._turn.model_copy(update={"turn_id": turn_id})
 
         self._send(Ev.VOICE_ASSISTANT_INTENT_START)
         deltas: asyncio.Queue[str | None] = asyncio.Queue()
         answer: list[str] = []
 
         def say(delta: str) -> None:
+            if delta.strip():
+                self._mark("first_text")
             answer.append(delta)
             deltas.put_nowait(delta)
 
@@ -117,16 +156,17 @@ class PipelineRun:
             try:
                 async for delta in self._s.agent.stream_reply(self._conversation_id, text, self._turn):
                     say(delta)
-            except Exception:
+            except Exception as exc:
                 if not self._s.agent.error_reply:
                     raise
                 _log.exception("[%s] the agent failed, the device says the error reply", self._device)
+                self._error = f"agent: {type(exc).__name__}: {exc}"
                 # The newline ends whatever sentence the failure interrupted.
                 say("\n")
                 say(self._s.agent.error_reply)
             finally:
                 deltas.put_nowait(None)
-            spoken = re.sub(r"\s+", " ", "".join(answer)).strip()
+            self._spoken = spoken = re.sub(r"\s+", " ", "".join(answer)).strip()
             # As in Home Assistant: after an answer that ends with a question the device listens again
             # without the wake word. A question that follows silence is not waited on, or an empty room
             # would be asked forever.
@@ -147,6 +187,7 @@ class PipelineRun:
 
         async def start_playback() -> None:
             if await clip.wait_audio():
+                self._mark("first_audio")
                 _log.info("[%s] the device plays the answer from %s", self._device, url)
                 self._send(Ev.VOICE_ASSISTANT_INTENT_PROGRESS, {"tts_start_streaming": "1"})
 
@@ -194,6 +235,7 @@ class PipelineRun:
                     _log.info("[%s] the voice was not compared: %.1f s of speech", self._device, seconds)
                 else:
                     name, score, ms = gate.closest
+                    self._similarity = score
                     verdict = f"is {name}" if gate.speaker else f"is not recognized, the closest is {name}"
                     _log.info(
                         "[%s] the voice %s (similarity %.2f on %.1f s; %.1f s of speech in all)",

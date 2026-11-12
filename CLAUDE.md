@@ -133,6 +133,17 @@ file fails at start:
   the name in front of the user turn (`[Voice: Anna]`) and `Agent._render_prompt` explains the tag, and `voice_tools()` (`remember_voice`, `forget_voice`, `known_voices`)
   enrolls from `TurnDeps.speech`.
 
+History (`history.py`, `web/routers/history.py`, `static/history.js`): `History` (owned by `Runtime`) writes one
+`turns` row per run that heard something or answered a question with silence. `PipelineRun` calls `open_turn()` once
+the text is known, so `TurnDeps.turn_id` exists while the agent answers (`set_reminder` stores it in
+`reminders.turn_id`), and `close_turn()` in its `finally`, which stores the answer, `TurnDeps.calls` (filled by
+`Agent.stream_reply` from tool call and result events), `timings` (ms from the run start: `heard`, `first_text`,
+`first_audio`, `done`), the error and the speaker embedding in a background task. Every logged-in person reads
+`GET /api/history` (filters `device`, `since`, `until`, page by `before_id`); `/api/history/stream` sends each turn as it
+is added and again when answered, from `History.watch()` queues that `close()` ends on shutdown. An hourly task
+deletes turns older than `history.retention_days` unless a reminder still points to them. Voice links (`voice_id`) and
+the person filter come with the voices stage.
+
 Status (`status.py`): `Status.items[<settings list>][<item name>]` is an `ItemStatus` (`ok | pending | error` +
 `detail`). `Satellite.status` and `Agent.tool_status` keep their own entries current, including an MCP connection
 lost after startup, and call `StatusBoard.touch()` only on a real change. The page listens to

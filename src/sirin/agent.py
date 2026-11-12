@@ -3,16 +3,18 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 import httpx2
 import numpy as np
 from mcp.client.auth import OAuthClientProvider
 from mcp.types import Tool
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
     AgentRunResultEvent,
     FunctionToolCallEvent,
+    FunctionToolResultEvent,
     ModelMessage,
     ModelRequest,
     ModelSettings,
@@ -26,6 +28,7 @@ from pydantic_ai import (
     UserPromptPart,
 )
 from pydantic_ai.mcp import MCPToolset
+from pydantic_ai.messages import ERROR_OUTCOMES
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai_compatible import OpenAICompatibleProvider
 from pydantic_ai.toolsets import AbstractToolset
@@ -58,16 +61,27 @@ VOICE_INSTRUCTIONS = (
 )
 
 
+class ToolCall(BaseModel):
+    name: str
+    args: dict[str, Any]
+    result: str | None = Field(default=None, description="What the tool returned to the model; None until it returns")
+    failed: bool = False
+
+
 class TurnDeps(BaseModel):
     """Who the agent is answering; tools that act on the device or the speaker read it."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     device: str
+    # The history row of this turn; None for a turn not kept in the history, such as a reminder.
+    turn_id: int | None = None
     # The name of the remembered voice that speaks, when it was recognized.
     speaker: str | None = None
     # The speech of this turn as 16 kHz floats; None for a turn nobody spoke, such as a reminder.
     speech: np.ndarray | None = None
+    # The tool calls of the answer, filled in by the agent as they happen.
+    calls: list[ToolCall] = Field(default_factory=list)
 
     @property
     def voice(self) -> str:
@@ -170,6 +184,7 @@ class Agent:
         return "".join([delta async for delta in self.stream_reply(conversation_id, text, turn)]).strip()
 
     async def stream_reply(self, conversation_id: str, text: str, turn: TurnDeps) -> AsyncIterator[str]:
+        calls: dict[str, ToolCall] = {}
         async with self._agent.run_stream_events(
             turn.tagged(text),
             message_history=self._messages(conversation_id),
@@ -190,8 +205,13 @@ class Agent:
                     # Ends the sentence so text said before a tool call is spoken while the tool runs.
                     yield "\n"
                 elif isinstance(event, FunctionToolCallEvent):
-                    args = json.dumps(event.part.args_as_dict(), ensure_ascii=False)
-                    _log.info("[%s] tool %s(%s)", conversation_id, event.part.tool_name, args)
+                    call = ToolCall(name=event.part.tool_name, args=event.part.args_as_dict())
+                    calls[event.part.tool_call_id] = call
+                    turn.calls.append(call)
+                    _log.info("[%s] tool %s(%s)", conversation_id, call.name, json.dumps(call.args, ensure_ascii=False))
+                elif isinstance(event, FunctionToolResultEvent) and (call := calls.get(event.tool_call_id)):
+                    call.result = event.part.model_response_str(wrap_if_error=False)
+                    call.failed = event.part.outcome in ERROR_OUTCOMES
                 elif isinstance(event, AgentRunResultEvent):
                     self._history[conversation_id] = (time.monotonic(), _last_turns(event.result.all_messages()))
                     _log.info("[%s] %r -> %r", conversation_id, text, event.result.output)

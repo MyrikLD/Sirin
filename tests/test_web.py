@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import httpx2
 import pytest
@@ -110,3 +111,17 @@ async def test_the_last_admin_stays(client):
     second = {"login": "boss", "name": "Boss", "password": "boss-secret", "role": "admin"}
     assert (await client.post("/api/users", json=second)).status_code == 201
     assert (await client.patch(f"/api/users/{admin['id']}", json={"role": "member"})).status_code == 200
+
+
+async def test_history_is_read_by_anyone_logged_in(app, client):
+    await app.state.runtime.history.open_turn("kitchen", "c", datetime.now(UTC), "hello", 0.2, 1500)
+    member = {"login": "anna", "name": "Anna", "password": "x"}
+    assert (await client.post("/api/users", json=member)).status_code == 201
+
+    async with _client(app) as anonymous:
+        assert (await anonymous.get("/api/history")).status_code == 401
+    async with _logged_in(app, "anna", "x") as anna:
+        (turn,) = (await anna.get("/api/history", params={"device": "kitchen"})).json()
+        assert (turn["text"], turn["answer"]) == ("hello", None)
+        assert (await anna.get("/api/history", params={"device": "hall"})).json() == []
+        assert (await anna.get("/api/history/devices")).json() == ["kitchen"]

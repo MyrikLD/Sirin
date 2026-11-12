@@ -113,6 +113,14 @@ class LLMConfig(BaseModel):
         return value
 
 
+class HistoryConfig(BaseModel):
+    retention_days: int = Field(
+        default=30,
+        ge=1,
+        description="Turns older than this are deleted, except a turn that set a reminder still pending",
+    )
+
+
 class McpServerConfig(BaseModel):
     model_config = probed("/api/probe/mcp")
 
@@ -137,6 +145,7 @@ class RuntimeSettings(BaseModel):
     tts: TtsConfig = Field(default_factory=TtsConfig, title="Text-to-speech")
     vad: VadConfig = Field(default_factory=VadConfig, title="End of utterance (VAD)")
     llm: LLMConfig = Field(default_factory=LLMConfig, title="Language model")
+    history: HistoryConfig = Field(default_factory=HistoryConfig, title="History")
     mcp_servers: list[McpServerConfig] = Field(
         default_factory=list, title="MCP servers", description="Tool servers for the LLM"
     )

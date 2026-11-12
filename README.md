@@ -113,6 +113,15 @@ Limits:
 - It is a convenience, not access control: a recording of a voice passes as that voice.
 - Isolation takes about a quarter of one CPU core while a remembered voice speaks.
 
+### History
+
+Every utterance is kept as one turn: the device, what was recognized, the answer, the tool calls with their results,
+the time each stage took, an error if there was one, and how similar the voice was to the closest remembered one. The
+**History** tab shows them newest first, filtered by device and day, and adds new turns while you watch. Everybody who
+can log in reads it; nobody can edit it. A wake word followed by no speech is not kept. Turns older than
+`history.retention_days` (30 by default, on the settings page) are deleted, except a turn that set a reminder which is
+still pending.
+
 ### Reminders
 
 The agent has built-in tools `set_reminder`, `list_reminders` and `cancel_reminder` ("remind me to turn off the stove in 10 minutes", "remind me tomorrow to eat", "every day at 8 tell me the weather", "every hour from 8 to 10 until Friday remind me to drink water"). A recurring reminder has a cron schedule in local time (`0 8-10 * * *`) and repeats until it is canceled or until its end time. When it sets a reminder, the LLM writes a note to itself. At the due time the agent runs that note, with all its tools, and the device that set the reminder announces the answer. Reminders are kept in the database and survive a restart. If the device is offline, the reminder is retried every 30 s for up to an hour, then dropped. Reminders that came due while the service was down are dropped at startup; a recurring reminder skips that occurrence and stays scheduled for its next time.

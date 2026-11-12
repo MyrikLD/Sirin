@@ -32,6 +32,8 @@ class Reminder(BaseModel):
     created: AwareDatetime
     schedule: str | None = None
     until: AwareDatetime | None = None
+    # The history turn that set it.
+    turn_id: int | None = None
 
     def instruction(self) -> str:
         """What the agent receives at the due time."""
@@ -106,7 +108,13 @@ class Reminders:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def add(
-        self, device: str, due: datetime, prompt: str, schedule: str | None = None, until: datetime | None = None
+        self,
+        device: str,
+        due: datetime,
+        prompt: str,
+        schedule: str | None = None,
+        until: datetime | None = None,
+        turn_id: int | None = None,
     ) -> Reminder:
         reminder = Reminder(
             id=uuid.uuid4().hex[:8],
@@ -116,6 +124,7 @@ class Reminders:
             created=datetime.now(UTC),
             schedule=schedule,
             until=until,
+            turn_id=turn_id,
         )
         async with self._db.session() as session, session.begin():
             await session.execute(sa.insert(tables.Reminder).values(**reminder.model_dump()))
@@ -242,7 +251,7 @@ def reminder_tools(reminders: Reminders) -> FunctionToolset[TurnDeps]:
             raise ModelRetry("Give exactly one of in_minutes and at.")
         if due <= now:
             raise ModelRetry(f"{due:%Y-%m-%d %H:%M} is in the past; the local time is {now:%Y-%m-%d %H:%M}.")
-        reminder = await reminders.add(ctx.deps.device, due.astimezone(UTC), prompt, repeat, end)
+        reminder = await reminders.add(ctx.deps.device, due.astimezone(UTC), prompt, repeat, end, ctx.deps.turn_id)
         first = f"{due.astimezone():%Y-%m-%d %H:%M, %A}"
         if repeat is not None:
             ends = f", until {end:%Y-%m-%d %H:%M}" if end is not None else ""
