@@ -40,10 +40,10 @@ comes from `SIRIN_*` env vars or `.env` (`AppSettings`).
 SQLite through SQLAlchemy async (`aiosqlite`), see `plan.md` for where it is going:
 - `tables.py`: the tables (classic `sa.Column` style). Times are `UtcDateTime`: aware in Python, naive UTC in SQLite;
   a naive value is refused.
-- `database.py`: `Database` opens the engine (WAL, foreign keys on, file mode 0600) and `migrate()` applies the Alembic
-  migrations in `migrations/` at every start, with foreign keys off while it runs (batch mode recreates tables).
-  `alembic.ini` is for the command line only. Store code takes an `AsyncSession` and does not commit; the caller opens
-  `async with db.session() as s, s.begin():`.
+- `database.py`: `Database` opens the engine (rollback journal, foreign keys on, file mode 0600) and `migrate()` applies
+  the Alembic migrations in `migrations/` at every start, with foreign keys off while it runs (batch mode recreates
+  tables). `alembic.ini` is for the command line only. Store code takes an `AsyncSession` and does not commit; the
+  caller opens `async with db.session() as s, s.begin():`.
 - There is no compatibility with older versions yet: their JSON files in `data/` are not read.
 - `users` and `sessions` hold the login (see Login below).
 
@@ -104,13 +104,21 @@ Request flow for one utterance:
   MCP client does not recover by itself after the server restarts. Each run gets the
   toolsets connected at that moment (`run_stream_events(toolsets=...)`), MCP first and built-in tools last.
 - Tools are prefixed `<server>_`.
+- Personal MCP servers (`personal_servers.py`, rows of `mcp_servers` with an owner) are held like the shared ones
+  (`PersonalServer`; `_live` is keyed by (owner, name), statuses in `personal_status` by id). A run gets the shared
+  toolsets plus those of `TurnDeps.person_id`, the person of the recognized voice (same `MATCH_THRESHOLD`, no stricter
+  bar: the user accepted that a voice match is not access control). A reminder runs with the tools of the person
+  whose turn set it (`history.turn_person()`). A name must differ from every shared name and the person's other
+  servers; `PUT /api/settings` refuses a shared name a personal server uses. Every change rebuilds the agent
+  (`Runtime.reconnect_tools()`, which drops dialog history). Routes: `/api/my/mcp-servers` (own, with probe and
+  authorize), `/api/mcp-servers/personal` (admin overview without URLs and headers).
 
-Reminders (`reminders.py`): built-in agent tools (`reminder_tools()`, passed to `Agent` with no prefix) read the
-device from `TurnDeps`, the pydantic-ai deps of every run. The LLM writes a prompt for itself; `Reminders` (owned by
-`Runtime`, so it outlives agent rebuilds) keeps them in the `reminders` table, written before its in-memory copy, and
-at the due time calls `Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the
-`device:<name>` conversation, TTS writes a `LiveClip`, and the device plays it via the voice_assistant announce
-API (`ANNOUNCE` feature). An offline device is retried for up to `GRACE`; reminders missed while the service was down are dropped at
+Reminders (`reminders.py`): built-in agent tools (`reminder_tools()`, passed to `Agent` with no prefix) read the device
+from `TurnDeps`, the pydantic-ai deps of every run. The LLM writes a prompt for itself; `Reminders` (owned by `Runtime`,
+so it outlives agent rebuilds) keeps them in the `reminders` table, written before its in-memory copy, and at the due
+time calls `Runtime._deliver_reminder()` → `Satellite.announce()`: the agent answers the prompt in the `device:<name>`
+conversation, TTS writes a `LiveClip`, and the device plays it via the voice_assistant announce API (`ANNOUNCE`
+feature). An offline device is retried for up to `GRACE`; reminders missed while the service was down are dropped at
 start. A recurring reminder has a cron `schedule` (`cronsim`, read in local wall time by `cron_next()`) and an optional
 `until`; it keeps its id and its one task: after each occurrence (announced or dropped) `_run` moves `due` to the next
 time, and at start a missed one moves forward instead of being dropped. Times are the process's local zone.
@@ -191,6 +199,6 @@ from the schema, so changing `config.py` changes the page:
 
 OAuth for HTTP MCP servers (`oauth.py`): `OAuthManager` runs the login flow from the settings page (redirect back
 to `/oauth/callback` on the origin the page was opened from), stores tokens in `mcp_tokens` (`DbTokenStorage`, found by
-the server's name and URL, so an unsaved server cannot be authorized and a changed URL drops the tokens), and on
+the server's owner, name and URL, so an unsaved server cannot be authorized and a changed URL drops the tokens), and on
 success calls back into `Runtime`, which reconnects the MCP servers (`Runtime.reconnect_tools()`). During normal runs
 the provider refuses to start an interactive login and raises `OAuthRequired` instead.

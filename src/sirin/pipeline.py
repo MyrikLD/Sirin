@@ -236,8 +236,11 @@ class PipelineRun:
                     break
 
             if gate is not None:
-                speaker = await self._s.voices.person_name(gate.speaker)
-                self._turn = TurnDeps(device=self._device, voice_id=gate.speaker, speaker=speaker, speech=gate.speech)
+                person = await self._s.voices.person(gate.speaker)
+                person_id, speaker = person if person is not None else (None, None)
+                self._turn = TurnDeps(
+                    device=self._device, voice_id=gate.speaker, person_id=person_id, speaker=speaker, speech=gate.speech
+                )
                 seconds = len(gate.speech) / SAMPLE_RATE
                 if gate.closest is None:
                     _log.info("[%s] the voice was not compared: %.1f s of speech", self._device, seconds)

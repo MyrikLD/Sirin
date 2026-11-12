@@ -47,14 +47,15 @@ class ServerNotSaved(RuntimeError):
 
 
 class DbTokenStorage(TokenStorage):
-    """The `mcp_tokens` row of one shared MCP server, found by its name and URL.
+    """The `mcp_tokens` row of one MCP server, found by its owner (None: shared), name and URL.
 
     A server not saved under that name and URL has no stored state; storing for it fails.
     """
 
-    def __init__(self, db: Database, server: McpServerConfig) -> None:
+    def __init__(self, db: Database, server: McpServerConfig, owner_id: int | None = None) -> None:
         self._db = db
         self._server = server
+        self._owner_id = owner_id
 
     async def get_tokens(self) -> OAuthToken | None:
         row = await self.read()
@@ -116,7 +117,8 @@ class DbTokenStorage(TokenStorage):
     def _server_is(self) -> list[sa.ColumnElement[bool]]:
         # Name and URL: a server pointed at another URL has its tokens dropped when saved, and until then
         # its unsaved URL must not reach the tokens of the old one.
-        return [McpServer.owner_id.is_(None), McpServer.name == self._server.name, McpServer.url == self._server.url]
+        owner = McpServer.owner_id.is_(None) if self._owner_id is None else McpServer.owner_id == self._owner_id
+        return [owner, McpServer.name == self._server.name, McpServer.url == self._server.url]
 
 
 class _Provider(OAuthClientProvider):
@@ -151,14 +153,15 @@ class OAuthManager:
     only refresh tokens and fail with OAuthRequired until the user authorizes from the page.
     """
 
-    def __init__(self, db: Database, on_authorized: Callable[[str], Awaitable[None]]) -> None:
+    def __init__(self, db: Database, on_authorized: Callable[[str, int | None], Awaitable[None]]) -> None:
+        """on_authorized(server name, owner id) runs once a login succeeded."""
         self._db = db
         self._on_authorized = on_authorized
         self._flows: dict[str, _Flow] = {}
         self._tasks: set[asyncio.Task[None]] = set()
 
-    async def provider(self, server: McpServerConfig) -> OAuthClientProvider:
-        row = await self._storage(server).read()
+    async def provider(self, server: McpServerConfig, owner_id: int | None = None) -> OAuthClientProvider:
+        row = await self._storage(server, owner_id).read()
         redirect_uris = (row.client_info or {}).get("redirect_uris") if row is not None else None
         if row is None or row.tokens is None or not redirect_uris:
             raise OAuthRequired(server.name)
@@ -169,19 +172,20 @@ class OAuthManager:
         async def never() -> AuthorizationCodeResult:
             raise OAuthRequired(server.name)
 
-        return self._provider(server, str(redirect_uris[0]), refuse, never)
+        return self._provider(server, owner_id, str(redirect_uris[0]), refuse, never)
 
     async def authorize(
         self,
         server: McpServerConfig,
         redirect_uri: str,
         connect: Callable[[OAuthClientProvider], Awaitable[object]],
+        owner_id: int | None = None,
     ) -> str | None:
         """Starts a login and returns the URL to open, or None if the stored tokens already work.
 
         connect opens the server with the given provider; it must run outside the caller's task.
         """
-        storage = self._storage(server)
+        storage = self._storage(server, owner_id)
         row = await storage.read()
         if row is None and await storage.server_id() is None:
             raise ServerNotSaved(server.name)
@@ -189,7 +193,7 @@ class OAuthManager:
         if registered and redirect_uri not in registered:
             # The client was set up for another address of this service; the provider would reject it.
             await storage.reset()
-        await self._preregister(server, redirect_uri)
+        await self._preregister(storage, server, redirect_uri)
         flow = _Flow()
 
         async def redirect(url: str) -> None:
@@ -200,7 +204,7 @@ class OAuthManager:
         async def callback() -> AuthorizationCodeResult:
             return await flow.code
 
-        provider = self._provider(server, redirect_uri, redirect, callback)
+        provider = self._provider(server, owner_id, redirect_uri, redirect, callback)
 
         async def login() -> None:
             try:
@@ -216,7 +220,7 @@ class OAuthManager:
             if not flow.url.done():
                 flow.url.set_result("")
             _log.info("OAuth for MCP server %s is done", server.name)
-            await self._on_authorized(server.name)
+            await self._on_authorized(server.name, owner_id)
 
         task = asyncio.create_task(login())
         self._tasks.add(task)
@@ -233,6 +237,7 @@ class OAuthManager:
     def _provider(
         self,
         server: McpServerConfig,
+        owner_id: int | None,
         redirect_uri: str,
         redirect: Callable[[str], Awaitable[None]],
         callback: Callable[[], Awaitable[AuthorizationCodeResult]],
@@ -246,19 +251,18 @@ class OAuthManager:
         return _Provider(
             server_url=server.url,
             client_metadata=metadata,
-            storage=self._storage(server),
+            storage=self._storage(server, owner_id),
             redirect_handler=redirect,
             callback_handler=callback,
         )
 
-    async def _preregister(self, server: McpServerConfig, redirect_uri: str) -> None:
+    async def _preregister(self, storage: DbTokenStorage, server: McpServerConfig, redirect_uri: str) -> None:
         """Stores a URL client id when the server has no client registration endpoint.
 
         This is IndieAuth, as Home Assistant does it: the client id is our origin, accepted because
         the redirect URI shares its scheme and host. The SDK does this by itself only for HTTPS
         client ids, so a plain-HTTP Sirin would otherwise POST to a /register that does not exist.
         """
-        storage = self._storage(server)
         if await storage.get_client_info() is not None:
             return
         metadata = await storage.server_metadata(server.url)
@@ -276,8 +280,8 @@ class OAuthManager:
         )
         _log.info("MCP server %s has no client registration; using client id %s", server.name, client_id)
 
-    def _storage(self, server: McpServerConfig) -> DbTokenStorage:
-        return DbTokenStorage(self._db, server)
+    def _storage(self, server: McpServerConfig, owner_id: int | None) -> DbTokenStorage:
+        return DbTokenStorage(self._db, server, owner_id)
 
 
 def _origin(url: str) -> str:

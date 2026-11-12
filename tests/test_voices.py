@@ -138,7 +138,7 @@ async def test_only_a_linked_voice_mutes_other_speech(db, voices):
     assert np.array_equal(out[said], audio[said])
     assert not out[stranger].any()
     assert np.all(gate.speech > 0)
-    assert await voices.person_name(voice_id) == "Anna"
+    assert (await voices.person(voice_id))[1] == "Anna"
 
 
 async def test_a_short_run_is_not_compared(db, voices):
@@ -197,7 +197,7 @@ async def test_claiming_a_turn_links_its_voice_and_only_its_owner_changes_it(db,
             await claim_turn(session, boris, second)
         await release_turn(session, anna, second)
     assert await _voice_of(db, second) is None
-    assert await voices.person_name(voice_id) == "Anna"
+    assert (await voices.person(voice_id))[1] == "Anna"
 
 
 async def test_merged_voices_keep_one_profile_and_all_turns(db, voices):

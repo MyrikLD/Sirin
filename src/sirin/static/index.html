@@ -12,16 +12,18 @@
   <nav id="tabs" class="tabs"></nav>
   <div id="settings-view" hidden>
     <form id="form"></form>
-    <div id="extra"></div>
   </div>
+  <div id="people-view" hidden></div>
   <div id="history-view" hidden></div>
   <div id="voices-view" hidden></div>
+  <div id="tools-view" hidden></div>
 </main>
 <div class="bar" id="bar" hidden><div><button class="primary" id="save">Save and apply</button><span id="msg"></span></div></div>
 <script type="module">
 import { api, el } from "./lib.js";
-import { accountBar, peopleCard } from "./account.js";
+import { accountBar, peopleView } from "./account.js";
 import { historyView } from "./history.js";
+import { toolsView } from "./tools.js";
 import { voicesView } from "./voices.js";
 
 // The form is rendered from the RuntimeSettings JSON schema and its x- extensions (see config.py):
@@ -273,8 +275,9 @@ function showTabs(views) {
   document.getElementById("account").replaceChildren(accountBar(me));
   document.getElementById("history-view").replaceChildren(historyView(me));
   document.getElementById("voices-view").replaceChildren(voicesView(me));
+  document.getElementById("tools-view").replaceChildren(toolsView(me));
   if (me.role !== "admin") {
-    showTabs([{ id: "history", title: "History" }, { id: "voices", title: "Voices" }]);
+    showTabs([{ id: "history", title: "History" }, { id: "voices", title: "Voices" }, { id: "tools", title: "My tools" }]);
     return;
   }
   const bar = document.getElementById("bar");
@@ -282,8 +285,10 @@ function showTabs(views) {
     { id: "settings", title: "Settings", onShow: (shown) => { bar.hidden = !shown; } },
     { id: "history", title: "History" },
     { id: "voices", title: "Voices" },
+    { id: "tools", title: "My tools" },
+    { id: "people", title: "People" },
   ]);
-  document.getElementById("extra").replaceChildren(peopleCard(me));
+  document.getElementById("people-view").replaceChildren(peopleView(me));
   schema = await api("/api/settings/schema");
   defs = schema.$defs || {};
   const collectForm = buildForm(await api("/api/settings"));

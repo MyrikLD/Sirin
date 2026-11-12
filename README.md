@@ -133,6 +133,16 @@ Limits:
 - Isolation takes about a quarter of one CPU core while a claimed voice speaks.
 - How well short far-field phrases group into voices has not been measured yet; expect to merge some voices by hand.
 
+### Personal tools
+
+Besides the shared MCP servers on the settings page, every person can add their own on the **My tools** tab (for
+example their mail or calendar), with the same Test and Authorize buttons. The assistant offers a person's tools only
+in the turns where it recognizes that person's voice, and in the reminders that person set. A server's name is the
+prefix of its tools, so it must differ from the shared servers' names. The admin sees who has which server and
+whether it is connected, but not its address or headers.
+
+A voice match is not access control: someone with a similar voice, or a recording, can get your tools too.
+
 ### History
 
 Every utterance is kept as one turn: the device, what was recognized, the answer, the tool calls with their results,

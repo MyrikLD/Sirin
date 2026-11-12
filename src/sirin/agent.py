@@ -76,8 +76,10 @@ class TurnDeps(BaseModel):
     device: str
     # The history row of this turn; None for a turn not kept in the history, such as a reminder.
     turn_id: int | None = None
-    # The voice that speaks, when the gate recognized one, and the name of the person it is linked to.
+    # The voice that speaks, when the gate recognized one, and the person it is linked to: their personal
+    # MCP servers join the tools of the turn.
     voice_id: int | None = None
+    person_id: int | None = None
     speaker: str | None = None
     # The speech of this turn as 16 kHz floats; None for a turn nobody spoke, such as a reminder.
     speech: np.ndarray | None = None
@@ -96,6 +98,14 @@ class TurnDeps(BaseModel):
         return f"[Voice: {self.voice}] {text}"
 
 
+class PersonalServer(BaseModel):
+    """An MCP server of one person: its tools are offered only in the turns of that person's voice."""
+
+    id: int
+    owner_id: int
+    cfg: McpServerConfig
+
+
 class Agent:
     """LLM with MCP tools; streams the spoken part of the answer as text deltas."""
 
@@ -106,19 +116,26 @@ class Agent:
         oauth: OAuthManager,
         on_status: Callable[[], None],
         builtin_tools: list[AbstractToolset[TurnDeps]],
+        personal: list[PersonalServer] | None = None,
     ) -> None:
         self._cfg = cfg
         self.error_reply = cfg.error_reply
         self._on_status = on_status
         self._prompt = compile_prompt(cfg.system_prompt)
         self._oauth = oauth
-        self._mcp_servers = mcp_servers
+        # (owner, personal server id, config); the shared servers have neither and come first.
+        self._servers: list[tuple[int | None, int | None, McpServerConfig]] = [
+            *((None, None, server) for server in mcp_servers),
+            *((p.owner_id, p.id, p.cfg) for p in personal or []),
+        ]
         self._builtin_tools = builtin_tools
         self._history: dict[str, tuple[float, list[ModelMessage]]] = {}
-        # The toolsets of the servers connected now, by server name.
-        self._live: dict[str, AbstractToolset[TurnDeps]] = {}
+        # The toolsets of the servers connected now, by (owner, server name).
+        self._live: dict[tuple[int | None, str], AbstractToolset[TurnDeps]] = {}
         self._holders: list[asyncio.Task[None]] = []
+        # Shared servers by name, for the settings page; personal ones by id.
         self.tool_status: dict[str, ItemStatus] = {}
+        self.personal_status: dict[int, ItemStatus] = {}
         provider = OpenAICompatibleProvider("local", base_url=cfg.base_url, api_key=cfg.api_key or "none")
         self._agent = PydanticAgent(
             OpenAIChatModel(cfg.model, provider=provider),
@@ -129,45 +146,52 @@ class Agent:
 
     async def start(self) -> None:
         """Returns once every server was tried, so the first dialog has the tools of the servers that are up."""
-        tried = [asyncio.Event() for _ in self._mcp_servers]
+        tried = [asyncio.Event() for _ in self._servers]
         self._holders = [
-            asyncio.create_task(self._hold(server, event))
-            for server, event in zip(self._mcp_servers, tried, strict=True)
+            asyncio.create_task(self._hold(owner, server_id, server, event))
+            for (owner, server_id, server), event in zip(self._servers, tried, strict=True)
         ]
         await asyncio.gather(*(event.wait() for event in tried))
 
-    async def _hold(self, server: McpServerConfig, tried: asyncio.Event) -> None:
+    async def _hold(
+        self, owner: int | None, server_id: int | None, server: McpServerConfig, tried: asyncio.Event
+    ) -> None:
         """Keeps one server connected until close(): a failed or lost connection is opened again after a pause."""
-        self._set_status(server.name, ItemStatus(state="pending", detail="connecting"))
+        key = (owner, server.name)
+        label = server.name if owner is None else f"{server.name} of person {owner}"
+
+        def set_status(status: ItemStatus) -> bool:
+            return self._set_status(server.name if server_id is None else server_id, status)
+
+        set_status(ItemStatus(state="pending", detail="connecting"))
         delay = RECONNECT_MIN_S
         while True:
             lost: asyncio.Queue[Exception] = asyncio.Queue()
             try:
-                async with await build_toolset(server, self._oauth, on_lost=lost.put_nowait) as toolset:
+                async with await build_toolset(server, self._oauth, on_lost=lost.put_nowait, owner_id=owner) as toolset:
                     count = len(await toolset.list_tools())
-                    self._live[server.name] = toolset.prefixed(server.name)
-                    _log.info("MCP server %s: %d tools", server.name, count)
-                    self._set_status(server.name, ItemStatus(state="ok", detail=f"{count} tools"))
+                    self._live[key] = toolset.prefixed(server.name)
+                    _log.info("MCP server %s: %d tools", label, count)
+                    set_status(ItemStatus(state="ok", detail=f"{count} tools"))
                     tried.set()
                     delay = RECONNECT_MIN_S
                     reason = f"connection lost: {await lost.get()}"
             except Exception as exc:
                 reason = await explain_connect_error(server, exc)
             finally:
-                self._live.pop(server.name, None)
-            if self._set_status(server.name, ItemStatus(state="error", detail=reason)):
-                _log.error(
-                    "MCP server %s is unavailable, its tools are skipped until it answers: %s", server.name, reason
-                )
+                self._live.pop(key, None)
+            if set_status(ItemStatus(state="error", detail=reason)):
+                _log.error("MCP server %s is unavailable, its tools are skipped until it answers: %s", label, reason)
             tried.set()
             await asyncio.sleep(delay)
             delay = min(delay * 2, RECONNECT_MAX_S)
 
-    def _set_status(self, name: str, status: ItemStatus) -> bool:
-        """True if the status changed."""
-        if self.tool_status.get(name) == status:
+    def _set_status(self, key: str | int, status: ItemStatus) -> bool:
+        """key: a shared server's name or a personal server's id. True if the status changed."""
+        statuses: dict = self.tool_status if isinstance(key, str) else self.personal_status
+        if statuses.get(key) == status:
             return False
-        self.tool_status[name] = status
+        statuses[key] = status
         self._on_status()
         return True
 
@@ -193,7 +217,7 @@ class Agent:
             usage_limits=UsageLimits(request_limit=MAX_TOOL_ROUNDS + 1),
             # The built-in tools go last: their descriptions carry the current time, and an LLM server reuses its
             # prompt cache only up to the first changed token.
-            toolsets=[*self._live.values(), *self._builtin_tools],
+            toolsets=[*self._toolsets_for(turn), *self._builtin_tools],
         ) as events:
             async for event in events:
                 if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
@@ -216,6 +240,11 @@ class Agent:
                 elif isinstance(event, AgentRunResultEvent):
                     self._history[conversation_id] = (time.monotonic(), _last_turns(event.result.all_messages()))
                     _log.info("[%s] %r -> %r", conversation_id, text, event.result.output)
+
+    def _toolsets_for(self, turn: TurnDeps) -> list[AbstractToolset[TurnDeps]]:
+        """The shared servers, then the personal ones of the person whose voice speaks."""
+        mine = [(key, toolset) for key, toolset in self._live.items() if key[0] is None or key[0] == turn.person_id]
+        return [toolset for _, toolset in sorted(mine, key=lambda item: (item[0][0] is not None, item[0][1]))]
 
     def _messages(self, conversation_id: str) -> list[ModelMessage]:
         now = time.monotonic()
@@ -259,17 +288,21 @@ async def build_toolset(
     oauth: OAuthManager,
     auth: OAuthClientProvider | None = None,
     on_lost: Callable[[Exception], None] | None = None,
+    owner_id: int | None = None,
 ) -> IsolatedToolset:
-    """auth overrides the stored-token OAuth provider, for the login flow itself."""
+    """auth overrides the stored-token OAuth provider, for the login flow itself; owner_id picks a personal server."""
     if server.oauth and auth is None:
-        auth = await oauth.provider(server)
+        auth = await oauth.provider(server, owner_id)
     mcp = MCPToolset(server.url, id=server.name, headers=server.headers or None, auth=auth)
     return IsolatedToolset(mcp, on_lost)
 
 
 async def list_server_tools(
-    server: McpServerConfig, oauth: OAuthManager, auth: OAuthClientProvider | None = None
+    server: McpServerConfig,
+    oauth: OAuthManager,
+    auth: OAuthClientProvider | None = None,
+    owner_id: int | None = None,
 ) -> list[Tool]:
     """Connects once and lists the server's tools."""
-    async with await build_toolset(server, oauth, auth) as toolset:
+    async with await build_toolset(server, oauth, auth, owner_id=owner_id) as toolset:
         return await toolset.list_tools()

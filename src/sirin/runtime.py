@@ -3,18 +3,19 @@ import logging
 from datetime import timedelta
 
 from sirin.accounts import FIRST_ADMIN_LOGIN, ensure_admin
-from sirin.agent import Agent
+from sirin.agent import Agent, PersonalServer
 from sirin.clips import ClipStore
 from sirin.config import AppSettings, RuntimeSettings
 from sirin.database import Database
-from sirin.history import History
+from sirin.history import History, turn_person
 from sirin.oauth import OAuthManager
+from sirin.personal_servers import all_personal
 from sirin.pipeline import Services
 from sirin.reminders import Reminder, Reminders, reminder_tools
 from sirin.satellite import Satellite
 from sirin.settings_store import SettingsStore
 from sirin.speech import SpeechToText, TextToSpeech
-from sirin.status import Status, StatusBoard
+from sirin.status import ItemStatus, Status, StatusBoard
 from sirin.vad import SileroModel
 from sirin.voice_models import VoiceModels
 from sirin.voices import Voices
@@ -48,6 +49,7 @@ class Runtime:
         self._services: Services | None = None
         self._satellites: list[Satellite] = []
         self.settings = RuntimeSettings()
+        self._personal: list[PersonalServer] = []
 
     async def start(self) -> None:
         await self.db.migrate()
@@ -74,20 +76,23 @@ class Runtime:
         async with self._lock:
             await self._apply(self.settings, reconnect_tools=True)
 
-    async def _on_authorized(self, server_name: str) -> None:
-        if any(m.name == server_name for m in self.settings.mcp_servers):
+    async def _on_authorized(self, server_name: str, owner_id: int | None) -> None:
+        if owner_id is not None or any(m.name == server_name for m in self.settings.mcp_servers):
             await self.reconnect_tools()
 
     async def _apply(self, settings: RuntimeSettings, reconnect_tools: bool) -> None:
         old, previous = self._services, self.settings
+        async with self.db.session() as session:
+            personal = await all_personal(session)
         if (
             old is None
             or reconnect_tools
             or settings.llm != previous.llm
             or settings.mcp_servers != previous.mcp_servers
+            or personal != self._personal
         ):
             tools = [reminder_tools(self.reminders)]
-            agent = Agent(settings.llm, settings.mcp_servers, self.oauth, self.board.touch, tools)
+            agent = Agent(settings.llm, settings.mcp_servers, self.oauth, self.board.touch, tools, personal)
             await agent.start()
         else:
             agent = old.agent
@@ -120,13 +125,20 @@ class Runtime:
 
         if old is not None and old.agent is not agent:
             await old.agent.close()
-        self._services, self._satellites, self.settings = services, satellites, settings
+        self._services, self._satellites, self.settings, self._personal = services, satellites, settings, personal
         self.board.touch()
         _log.info("applied settings: %d device(s), %d MCP server(s)", len(satellites), len(agent.tool_status))
 
     async def _deliver_reminder(self, reminder: Reminder) -> bool:
         satellite = next((s for s in self._satellites if s.cfg.name == reminder.device), None)
-        return satellite is not None and await satellite.announce(reminder.instruction())
+        if satellite is None:
+            return False
+        # The reminder runs with the personal tools of whoever set it, as their own turn would.
+        person = None
+        if reminder.turn_id is not None:
+            async with self.db.session() as session:
+                person = await turn_person(session, reminder.turn_id)
+        return await satellite.announce(reminder.instruction(), person)
 
     async def stop(self) -> None:
         await self.reminders.stop()
@@ -135,6 +147,10 @@ class Runtime:
             await self._stop()
         await self.history.stop()
         await self.db.close()
+
+    def personal_status(self, server_id: int) -> ItemStatus:
+        known = self._services.agent.personal_status.get(server_id) if self._services is not None else None
+        return known or ItemStatus(state="pending", detail="not connected yet")
 
     def status(self) -> Status:
         return Status(

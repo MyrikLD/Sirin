@@ -1,3 +1,5 @@
+/* The hidden attribute wins over the display rules below. */
+[hidden] { display: none !important; }
 :root {
   --bg: #f6f7f9; --card: #fff; --text: #1c1e21; --muted: #6b7280; --border: #dfe3e8;
   --accent: #2563eb; --accent-text: #fff; --ok: #15803d; --warn: #b45309; --err: #b91c1c;
@@ -52,6 +54,8 @@ button.remove { padding: 2px 8px; }
 .account { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); }
 .account form, .person form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
 .account form input, .person form input, .person form select { width: auto; flex: 1 1 140px; }
+.account form { flex-basis: 100%; }
+.item > summary .badge.hint { font-weight: normal; }
 .notice { color: var(--muted); }
 .login { max-width: 340px; margin: 12vh auto 0; }
 .login .field { grid-template-columns: 1fr; }
@@ -63,3 +67,7 @@ button.remove { padding: 2px 8px; }
 .turn > summary .hint { white-space: nowrap; }
 .turn > summary .name { font-family: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .turn .field > div { padding-top: 6px; overflow-wrap: anywhere; }
+.row .name { flex: 1; }
+.server .probe .primary { padding: 5px 14px; }
+.item > summary .hint { margin: 0; }
+.item > summary .name.text { font-family: inherit; }

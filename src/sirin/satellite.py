@@ -156,7 +156,7 @@ class Satellite:
         elif self._run is not None:
             self._run.end_audio()
 
-    async def announce(self, instruction: str) -> bool:
+    async def announce(self, instruction: str, person: tuple[int, str] | None = None) -> bool:
         """Runs instruction through the agent and has the device announce the answer.
 
         False if the device is offline now; raises if it will never be able to announce.
@@ -171,7 +171,9 @@ class Satellite:
                 await asyncio.wait({task})
 
             services = self.services
-            text = await services.agent.reply(self._device_conversation, instruction, TurnDeps(device=self.cfg.name))
+            person_id, speaker = person if person is not None else (None, None)
+            turn = TurnDeps(device=self.cfg.name, person_id=person_id, speaker=speaker)
+            text = await services.agent.reply(self._device_conversation, instruction, turn)
             if not text:
                 _log.warning("[%s] the agent has nothing to announce", self.cfg.name)
                 return True

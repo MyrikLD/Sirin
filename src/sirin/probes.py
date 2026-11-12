@@ -90,9 +90,9 @@ async def probe_llm(cfg: LLMConfig) -> ProbeResult:
 
 
 @_guard
-async def probe_mcp(cfg: McpServerConfig, oauth: OAuthManager) -> ProbeResult:
+async def probe_mcp(cfg: McpServerConfig, oauth: OAuthManager, owner_id: int | None = None) -> ProbeResult:
     try:
-        tools = await list_server_tools(cfg, oauth)
+        tools = await list_server_tools(cfg, oauth, owner_id=owner_id)
     except Exception as exc:
         return ProbeResult(ok=False, message=await explain_connect_error(cfg, exc))
     details = [f"{cfg.name}_{t.name}: {(t.description or '').partition('\n')[0]}" for t in tools]

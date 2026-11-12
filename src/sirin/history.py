@@ -101,6 +101,19 @@ async def get_turn(session: AsyncSession, turn_id: int, viewer: Account) -> Turn
     return TurnOut.model_validate(dict(row)) if row is not None else None
 
 
+async def turn_person(session: AsyncSession, turn_id: int) -> tuple[int, str] | None:
+    """The id and name of the person whose voice said the turn."""
+    row = (
+        await session.execute(
+            sa.select(User.id, User.name)
+            .join(Voice, Voice.user_id == User.id)
+            .join(Turn, Turn.voice_id == Voice.id)
+            .where(Turn.id == turn_id)
+        )
+    ).one_or_none()
+    return (row.id, row.name) if row is not None else None
+
+
 async def turn_devices(session: AsyncSession) -> list[str]:
     return list(await session.scalars(sa.select(Turn.device).distinct().order_by(Turn.device)))
 

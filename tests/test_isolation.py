@@ -7,7 +7,7 @@ from sirin.config import McpServerConfig
 from sirin.oauth import OAuthManager
 
 
-async def _ignore(_: str) -> None:
+async def _ignore(*_) -> None:
     pass
 
 

@@ -11,7 +11,7 @@ MIGRATIONS = Path(__file__).resolve().parent / "migrations"
 
 
 class Database:
-    """The SQLite database: WAL mode, foreign keys on, migrated to the latest schema by migrate()."""
+    """The SQLite database: one file, foreign keys on, migrated to the latest schema by migrate()."""
 
     def __init__(self, url: str) -> None:
         memory = ":memory:" in url
@@ -24,7 +24,7 @@ class Database:
     def in_dir(cls, data_dir: Path) -> Self:
         data_dir.mkdir(parents=True, exist_ok=True)
         path = data_dir / "sirin.db"
-        # It holds API keys and OAuth tokens; SQLite gives its -wal and -shm files the same mode.
+        # It holds API keys and OAuth tokens; SQLite gives its short-lived -journal file the same mode.
         path.touch(mode=0o600)
         path.chmod(0o600)
         return cls(f"sqlite+aiosqlite:///{path}")
@@ -50,7 +50,9 @@ class Database:
 
 def _on_connect(dbapi_connection, _record) -> None:
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
+    # The rollback journal exists only while a write is in progress, so the idle database is the one file.
+    # Set on every connection: a database once in WAL mode stays in it until told otherwise.
+    cursor.execute("PRAGMA journal_mode=DELETE")
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
 

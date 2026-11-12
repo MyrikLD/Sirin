@@ -167,3 +167,31 @@ async def test_a_member_sees_their_turns_and_unclaimed_ones(app, client):
     assert len((await client.get("/api/voices")).json()) == 2
     (only_anna,) = (await client.get("/api/history", params={"person_id": mine["person_id"]})).json()
     assert (only_anna["id"], only_anna["voice_label"]) == (anna_turn, "far from the mic")
+
+
+async def test_personal_servers_belong_to_their_person(app, client):
+    for login in ("anna", "boris"):
+        response = await client.post("/api/users", json={"login": login, "name": login.title(), "password": "x"})
+        assert response.status_code == 201
+    shared = {"name": "home", "url": "http://127.0.0.1:1/mcp"}
+    assert (await client.put("/api/settings", json={"mcp_servers": [shared]})).status_code == 204
+    mail = {"name": "mail", "url": "http://127.0.0.1:1/mail", "headers": {"Authorization": "Bearer secret"}}
+
+    async with _logged_in(app, "anna", "x") as anna, _logged_in(app, "boris", "x") as boris:
+        assert (await anna.post("/api/my/mcp-servers", json=shared)).status_code == 409
+        created = (await anna.post("/api/my/mcp-servers", json=mail)).json()
+        assert (await anna.post("/api/my/mcp-servers", json=mail)).status_code == 409
+        assert (await boris.post("/api/my/mcp-servers", json=mail)).status_code == 201
+
+        (mine,) = (await anna.get("/api/my/mcp-servers")).json()
+        assert mine["headers"] == mail["headers"]
+        assert (await boris.delete(f"/api/my/mcp-servers/{created['id']}")).status_code == 404
+        moved = mail | {"url": "http://127.0.0.1:1/mail2"}
+        assert (await anna.put(f"/api/my/mcp-servers/{created['id']}", json=moved)).status_code == 204
+        assert (await anna.get("/api/mcp-servers/personal")).status_code == 403
+
+    overview = (await client.get("/api/mcp-servers/personal")).json()
+    assert sorted(s["owner"] for s in overview) == ["Anna", "Boris"]
+    assert "headers" not in overview[0] and "url" not in overview[0]
+    taken = await client.put("/api/settings", json={"mcp_servers": [shared, {"name": "mail", "url": "http://x/"}]})
+    assert taken.status_code == 409

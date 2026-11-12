@@ -189,14 +189,17 @@ class Voices:
             raise LookupError(f"voice {voice_id} has no voiceprint")
         return unpack_voiceprint(data)
 
-    async def person_name(self, voice_id: int | None) -> str | None:
-        """The name of the person the voice is linked to."""
+    async def person(self, voice_id: int | None) -> tuple[int, str] | None:
+        """The id and name of the person the voice is linked to."""
         if voice_id is None:
             return None
         async with self._db.session() as session:
-            return await session.scalar(
-                sa.select(User.name).join(Voice, Voice.user_id == User.id).where(Voice.id == voice_id)
-            )
+            row = (
+                await session.execute(
+                    sa.select(User.id, User.name).join(Voice, Voice.user_id == User.id).where(Voice.id == voice_id)
+                )
+            ).one_or_none()
+        return (row.id, row.name) if row is not None else None
 
     async def learn(self, turn_id: int, voice_id: int | None, speech: np.ndarray) -> None:
         """Stores the embedding of a turn and assigns it a voice: the one the gate found, or a new one.
