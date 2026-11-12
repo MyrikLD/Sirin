@@ -6,8 +6,6 @@ from sirin.web.deps import SESSION_COOKIE, AccountDep, SessionDep
 
 router = APIRouter(prefix="/api/auth")
 
-PASSWORD = Field(min_length=8, description="At least 8 characters")
-
 
 class Credentials(BaseModel):
     login: str
@@ -16,7 +14,7 @@ class Credentials(BaseModel):
 
 class PasswordChange(BaseModel):
     current: str = Field(description="The password now")
-    new: str = PASSWORD
+    new: str = Field(description="The new password")
 
 
 @router.post("/login", status_code=204)

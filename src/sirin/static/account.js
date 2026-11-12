@@ -13,7 +13,7 @@ function showResult(node, promise, done) {
 export function accountBar(me) {
   const result = status();
   const current = el("input", { type: "password", placeholder: "current password", autocomplete: "current-password", required: "" });
-  const fresh = el("input", { type: "password", placeholder: "new password", autocomplete: "new-password", minlength: "8", required: "" });
+  const fresh = el("input", { type: "password", placeholder: "new password", autocomplete: "new-password", required: "" });
   const form = el("form", {}, current, fresh, el("button", {}, "Change"), result);
   form.hidden = true;
   form.addEventListener("submit", (e) => {
@@ -42,7 +42,7 @@ const roleSelect = (value) => {
 function personItem(person, me, reload) {
   const name = el("input", { value: person.name, required: "" });
   const role = roleSelect(person.role);
-  const password = el("input", { type: "password", placeholder: "new password (optional)", autocomplete: "new-password", minlength: "8" });
+  const password = el("input", { type: "password", placeholder: "new password (optional)", autocomplete: "new-password" });
   const result = status();
   const form = el("form", {}, name, role, password, el("button", {}, "Save"), result);
   form.addEventListener("submit", (e) => {
@@ -71,7 +71,7 @@ export function peopleCard(me) {
   };
   const login = el("input", { placeholder: "login", pattern: "[A-Za-z0-9._\\-]+", required: "" });
   const name = el("input", { placeholder: "name the assistant uses", required: "" });
-  const password = el("input", { type: "password", placeholder: "password", autocomplete: "new-password", minlength: "8", required: "" });
+  const password = el("input", { type: "password", placeholder: "password", autocomplete: "new-password", required: "" });
   const role = roleSelect("member");
   const result = status();
   const add = el("form", {}, login, name, password, role, el("button", {}, "Add"), result);

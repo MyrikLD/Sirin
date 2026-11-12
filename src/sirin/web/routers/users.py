@@ -14,7 +14,6 @@ from sirin.accounts import (
     update_account,
 )
 from sirin.web.deps import SessionDep, require_admin
-from sirin.web.routers.auth import PASSWORD
 
 router = APIRouter(prefix="/api/users", dependencies=[Depends(require_admin)])
 
@@ -22,14 +21,14 @@ router = APIRouter(prefix="/api/users", dependencies=[Depends(require_admin)])
 class NewAccount(BaseModel):
     login: str = Field(min_length=1, pattern=r"^\s*[A-Za-z0-9._-]+\s*$", description="Letters, digits, . _ -")
     name: str = Field(min_length=1, description="What the LLM calls the person")
-    password: str = PASSWORD
+    password: str
     role: Role = Role.MEMBER
 
 
 class AccountChange(BaseModel):
     name: str | None = Field(default=None, min_length=1)
     role: Role | None = None
-    password: str | None = Field(default=None, min_length=8, description="A new password; the person's sessions end")
+    password: str | None = Field(default=None, description="A new password; the person's sessions end")
 
 
 @router.get("")
