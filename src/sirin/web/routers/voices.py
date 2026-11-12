@@ -8,7 +8,6 @@ from sirin.voice_links import (
     claim_turn,
     delete_voice,
     list_voices,
-    merge_voices,
     release_turn,
     update_voice,
 )
@@ -18,13 +17,8 @@ router = APIRouter(dependencies=[Depends(current_account)])
 
 
 class VoiceChange(BaseModel):
-    label: str | None = Field(default=None, description="A name for the voice itself; empty clears it")
     person_id: int | None = Field(default=None, description="Link to this person (admin only)")
     unlink: bool = Field(default=False, description="Take the voice from its person")
-
-
-class Merge(BaseModel):
-    into: int = Field(description="The voice that keeps the turns")
 
 
 def _refresh(runtime: RuntimeDep, background: BackgroundTasks) -> None:
@@ -56,7 +50,7 @@ async def patch_voice(
     runtime: RuntimeDep,
     background: BackgroundTasks,
 ) -> None:
-    await _guarded(update_voice(session, account, voice_id, change.label, change.person_id, change.unlink))
+    await _guarded(update_voice(session, account, voice_id, change.person_id, change.unlink))
     _refresh(runtime, background)
 
 
@@ -65,19 +59,6 @@ async def delete_voice_route(
     voice_id: int, account: AccountDep, session: SessionDep, runtime: RuntimeDep, background: BackgroundTasks
 ) -> None:
     await _guarded(delete_voice(session, account, voice_id))
-    _refresh(runtime, background)
-
-
-@router.post("/api/voices/{voice_id}/merge", status_code=204)
-async def post_merge(
-    voice_id: int,
-    merge: Merge,
-    account: AccountDep,
-    session: SessionDep,
-    runtime: RuntimeDep,
-    background: BackgroundTasks,
-) -> None:
-    await _guarded(merge_voices(session, account, voice_id, merge.into))
     _refresh(runtime, background)
 
 

@@ -5,11 +5,11 @@ const PAGE = 50;
 const time = (iso) => new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "medium" });
 const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
 
-export const voiceName = (v) => v.label || `voice ${v.id}`;
+export const voiceName = (id) => `voice ${id}`;
 
 function voiceLine(turn, me, reload) {
   if (turn.voice_id == null) return [el("span", { class: "hint" }, "not recognized")];
-  const parts = [voiceName({ id: turn.voice_id, label: turn.voice_label })];
+  const parts = [voiceName(turn.voice_id)];
   parts.push(turn.person_name ? ` · ${turn.person_name}` : " · nobody's");
   if (turn.voice_confirmed) parts.push(" · confirmed");
   const result = el("span", { class: "result" });

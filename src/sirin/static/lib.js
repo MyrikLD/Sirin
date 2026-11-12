@@ -7,10 +7,12 @@ export const el = (tag, attrs = {}, ...children) => {
   return node;
 };
 
-// GET without a body; with one, sends it as JSON (POST unless told otherwise).
+// GET without a body or a method; a body goes as JSON, by POST unless told otherwise.
 // A 401 outside the login page means the session is gone: the browser goes to log in and the call never settles.
-export async function api(path, body, method = "POST") {
-  const opts = body === undefined ? (method === "POST" ? {} : { method }) : { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+export async function api(path, body, method) {
+  const opts = body === undefined
+    ? { method: method || "GET" }
+    : { method: method || "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
   const r = await fetch(path, opts);
   if (r.status === 401 && location.pathname !== "/login.html") {
     location.href = "/login.html?next=" + encodeURIComponent(location.pathname);

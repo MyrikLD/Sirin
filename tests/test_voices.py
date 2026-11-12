@@ -10,7 +10,7 @@ from sirin.agent import TurnDeps
 from sirin.history import History
 from sirin.tables import Turn, Voice
 from sirin.vad import FRAME_SAMPLES, SAMPLE_RATE
-from sirin.voice_links import NotAllowed, claim_turn, merge_voices, release_turn
+from sirin.voice_links import NotAllowed, claim_turn, release_turn
 from sirin.voice_models import IsolatedStream, Isolator, SpeakerModel, VoiceModels, fbank, to_floats, to_pcm
 from sirin.voices import CONFIDENT_MS, SpeakerGate, Voices, voice_profile
 
@@ -198,20 +198,6 @@ async def test_claiming_a_turn_links_its_voice_and_only_its_owner_changes_it(db,
         await release_turn(session, anna, second)
     assert await _voice_of(db, second) is None
     assert (await voices.person(voice_id))[1] == "Anna"
-
-
-async def test_merged_voices_keep_one_profile_and_all_turns(db, voices):
-    admin = await _person(db, "boss", Role.ADMIN)
-    first = await _turn(db, voices, _audio((ANNA, 2)))
-    other = await _turn(db, voices, _audio((STRANGER, 4)))
-    keep, gone = await _voice_of(db, first), await _voice_of(db, other)
-    async with db.session() as session, session.begin():
-        await merge_voices(session, admin, gone, keep)
-    await voices.reload()
-    assert voices.count == 1
-    assert await _voice_of(db, other) == keep
-    async with db.session() as session:
-        assert await session.scalar(sa.select(Voice.voiceprint.is_not(None)).where(Voice.id == keep))
 
 
 def test_turn_carries_the_voice_only_when_voices_are_recognized():

@@ -136,12 +136,13 @@ class Agent:
         # Shared servers by name, for the settings page; personal ones by id.
         self.tool_status: dict[str, ItemStatus] = {}
         self.personal_status: dict[int, ItemStatus] = {}
-        provider = OpenAICompatibleProvider("local", base_url=cfg.base_url, api_key=cfg.api_key or "none")
+        model = cfg.current
+        provider = OpenAICompatibleProvider("local", base_url=model.base_url, api_key=model.api_key or "none")
         self._agent = PydanticAgent(
-            OpenAIChatModel(cfg.model, provider=provider),
+            OpenAIChatModel(model.model, provider=provider),
             deps_type=TurnDeps,
             instructions=self._render_prompt,
-            model_settings=ModelSettings(temperature=cfg.temperature, timeout=LLM_TIMEOUT_S),
+            model_settings=ModelSettings(temperature=model.temperature, timeout=LLM_TIMEOUT_S),
         )
 
     async def start(self) -> None:

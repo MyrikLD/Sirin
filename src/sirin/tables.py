@@ -104,8 +104,6 @@ class Voice(Base):
     id = sa.Column(sa.Integer, primary_key=True)
     # NULL: nobody has said it is theirs; such a voice lives while history turns point to it.
     user_id = sa.Column(sa.Integer, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    # Set by the person; the page shows "voice <id>" while it is empty.
-    label = sa.Column(sa.String, nullable=True)
     # The profile it is identified by: float32, the mean of its confident turns.
     embedding = sa.Column(sa.LargeBinary, nullable=False)
     # The isolation network's tensors (np.savez), about 10 MB; NULL until a turn of 3 s of speech or more.

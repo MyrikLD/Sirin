@@ -17,18 +17,20 @@
   <div id="history-view" hidden></div>
   <div id="voices-view" hidden></div>
   <div id="tools-view" hidden></div>
+  <div id="reminders-view" hidden></div>
 </main>
 <div class="bar" id="bar" hidden><div><button class="primary" id="save">Save and apply</button><span id="msg"></span></div></div>
 <script type="module">
 import { api, el } from "./lib.js";
 import { accountBar, peopleView } from "./account.js";
 import { historyView } from "./history.js";
+import { remindersView } from "./reminders.js";
 import { toolsView } from "./tools.js";
 import { voicesView } from "./voices.js";
 
 // The form is rendered from the RuntimeSettings JSON schema and its x- extensions (see config.py):
-// x-choices (dropdown), x-probe (Test button endpoint), x-authorize (Authorize button endpoint),
-// format: password (masked input), title (section heading).
+// x-choices (dropdown), x-choices-from (dropdown of the item names of a sibling list), x-probe (Test button
+// endpoint), x-authorize (Authorize button endpoint), format: password (masked input), title (section heading).
 let schema, defs;
 
 
@@ -48,6 +50,7 @@ function resolve(s) {
 function editor(rawSchema, value, key) {
   const s = resolve(rawSchema);
   if (s["x-choices"]) return choiceEditor(s, value);
+  if (s["x-choices-from"]) return choiceEditor(s, value, "the first one");
   if (s.type === "object" && s.properties) return objectEditor(s, value || {});
   if (s.type === "object") return mapEditor(value);
   if (s.type === "array" && resolve(s.items).type === "object") return listEditor(s, value || [], key);
@@ -74,13 +77,13 @@ function editor(rawSchema, value, key) {
 }
 
 // A dropdown of values the server reports; the saved value stays listed even if the server dropped it.
-function choiceEditor(s, value) {
+function choiceEditor(s, value, emptyLabel) {
   const select = el("select");
   const setOptions = (values) => {
     const current = select.value || value || "";
-    const options = [el("option", { value: "" }, s.default ? `default (${s.default})` : "server default")];
+    const options = [el("option", { value: "" }, emptyLabel || (s.default ? `default (${s.default})` : "server default"))];
     for (const v of values) options.push(el("option", { value: v }, v));
-    if (current && !values.includes(current)) options.push(el("option", { value: current }, `${current} (not on the server)`));
+    if (current && !values.includes(current)) options.push(el("option", { value: current }, `${current} (${emptyLabel ? "not in the list" : "not on the server"})`));
     select.replaceChildren(...options);
     select.value = current;
   };
@@ -89,17 +92,27 @@ function choiceEditor(s, value) {
 }
 
 function objectEditor(s, value) {
-  const node = el("div"), getters = {}, choices = {};
+  const node = el("div"), getters = {}, choices = {}, setters = {};
   const required = new Set(s.required || []);
   for (const [k, prop] of Object.entries(s.properties)) {
     const ed = editor(prop, value[k], k);
     if (required.has(k) && ed.node.tagName === "INPUT") ed.node.required = true;
     getters[k] = ed.get;
-    if (ed.setOptions) choices[k] = ed.setOptions;
+    if (ed.setOptions) setters[k] = ed.setOptions;
+    if (ed.setOptions && !resolve(prop)["x-choices-from"]) choices[k] = ed.setOptions;
     const desc = resolve(prop).description;
     node.append(el("div", { class: "field" }, el("label", {}, k + (required.has(k) ? " *" : "")), ed.node, desc ? el("p", { class: "hint" }, desc) : null));
   }
   const get = () => collect(getters);
+  // A dropdown of the names in a sibling list follows that list as it is edited.
+  for (const [k, prop] of Object.entries(s.properties)) {
+    const list = resolve(prop)["x-choices-from"];
+    if (!list) continue;
+    const fill = () => setters[k]((getters[list]() || []).map(item => item.name).filter(Boolean));
+    node.addEventListener("input", fill);
+    node.addEventListener("click", () => queueMicrotask(fill));
+    queueMicrotask(fill);
+  }
   if (s["x-probe"]) {
     const [authField, authPath] = Object.entries(s.properties).map(([k, p]) => [k, p["x-authorize"]]).find(([, path]) => path) || [];
     node.append(probeBar(s["x-probe"], get, choices, node, authPath && { field: authField, path: authPath }));
@@ -276,8 +289,9 @@ function showTabs(views) {
   document.getElementById("history-view").replaceChildren(historyView(me));
   document.getElementById("voices-view").replaceChildren(voicesView(me));
   document.getElementById("tools-view").replaceChildren(toolsView(me));
+  document.getElementById("reminders-view").replaceChildren(remindersView(me));
   if (me.role !== "admin") {
-    showTabs([{ id: "history", title: "History" }, { id: "voices", title: "Voices" }, { id: "tools", title: "My tools" }]);
+    showTabs([{ id: "history", title: "History" }, { id: "voices", title: "Voices" }, { id: "tools", title: "My tools" }, { id: "reminders", title: "Reminders" }]);
     return;
   }
   const bar = document.getElementById("bar");
@@ -286,6 +300,7 @@ function showTabs(views) {
     { id: "history", title: "History" },
     { id: "voices", title: "Voices" },
     { id: "tools", title: "My tools" },
+    { id: "reminders", title: "Reminders" },
     { id: "people", title: "People" },
   ]);
   document.getElementById("people-view").replaceChildren(peopleView(me));

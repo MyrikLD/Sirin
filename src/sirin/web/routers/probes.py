@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from sirin.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
+from sirin.config import DeviceConfig, LLMModelConfig, McpServerConfig, SttConfig, TtsConfig
 from sirin.probes import ProbeResult, probe_device, probe_llm, probe_mcp, probe_stt, probe_tts
 from sirin.web.deps import RuntimeDep
 
@@ -19,7 +19,7 @@ async def post_probe_tts(cfg: TtsConfig) -> ProbeResult:
 
 
 @router.post("/llm")
-async def post_probe_llm(cfg: LLMConfig) -> ProbeResult:
+async def post_probe_llm(cfg: LLMModelConfig) -> ProbeResult:
     return await probe_llm(cfg)
 
 

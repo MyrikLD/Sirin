@@ -54,6 +54,10 @@ Two config layers in `config.py`:
 - `RuntimeSettings` (edited on the web page, persisted by `SettingsStore` in `settings_store.py`): devices, STT, TTS,
   VAD, LLM, MCP servers. Each block is one row of `settings` and only changed rows are written; MCP servers are rows
   of `mcp_servers` with `owner_id` NULL (shared), matched by name, so a kept server keeps its id and its tokens.
+  The `llm` block holds several models (`LLMModelConfig`: name, URL, model, key, temperature, each with its own Test);
+  `active` names the one in use (`LLMConfig.current`, the first when empty), while the prompt, error reply and dialog
+  TTL are shared. Status reports the models under `models`. A stored block that no longer validates is replaced by
+  its defaults with a warning (`settings_store._valid_blocks()`), so a schema change cannot stop the start.
   `PUT /api/settings` calls `Runtime.apply()`, which saves it and under a lock rebuilds only what changed, with no
   restart needed:
   - the `Agent` (and its MCP connections) when `llm` or `mcp_servers` changed;
@@ -122,6 +126,9 @@ feature). An offline device is retried for up to `GRACE`; reminders missed while
 start. A recurring reminder has a cron `schedule` (`cronsim`, read in local wall time by `cron_next()`) and an optional
 `until`; it keeps its id and its one task: after each occurrence (announced or dropped) `_run` moves `due` to the next
 time, and at start a missed one moves forward instead of being dropped. Times are the process's local zone.
+`GET /api/reminders` (`web/routers/reminders.py`) lists `Reminders.pending()` with the person from
+`reminder_people()` (turn → voice → user) and filters like the history; `DELETE /api/reminders/{id}` is for that
+person or the admin. The page shows no device: for now there is one satellite.
 
 Voices (`voices.py`), on only when the `SIRIN_VOICE_MODELS` directory (default `models/voices`) exists; `Runtime` logs
 at start which it is. The Dockerfile adds the three ONNX files, pinned and SHA-256 checked; a directory with a missing
@@ -129,8 +136,10 @@ file fails at start:
 - `SpeakerModel` is WeSpeaker ResNet34 on Kaldi filter bank features computed in `fbank()`; `Isolator` /
   `IsolatedStream` run the VoxLock target-speaker network (`enroll.onnx` turns a 3 s sample into a voiceprint of
   about 10 MB, `chunk.onnx` streams). The voiceprint is not a speaker vector, so both models are needed.
-- `voice_models.py` holds the networks (`VoiceModels.load()` also hashes the three files into `version`);
-  `voices.py` the store and the gate; `voice_links.py` what people do with voices on the page.
+- `voice_models.py` holds the networks (`VoiceModels.load()` also hashes the three files into `version`); `voices.py`
+  the store and the gate; `voice_links.py` what people do with voices on the page (claim a turn, link or unlink,
+  delete); a voice has no name of its own and voices are not merged: several voices of one person are all linked to
+  them.
 - `Voices` (owned by `Runtime`) keeps the `voices` table's profiles in memory for the gate threads and the set of
   voices that may isolate (linked to a person and with a voiceprint). Voiceprints are read lazily: `isolate()` runs
   in the gate's worker thread and reads through the event loop (`run_coroutine_threadsafe`). `start()` compares
@@ -194,6 +203,8 @@ from the schema, so changing `config.py` changes the page:
 - `model_config = probed("/api/probe/...")` (`x-probe`) gives a block a Test button that POSTs its unsaved values
   there (`probes.py`).
 - `json_schema_extra=CHOICES` (`x-choices`) makes a field a dropdown filled from that block's probe suggestions.
+- `json_schema_extra=choices_from("<list field>")` (`x-choices-from`) makes a field a dropdown of the `name`s of the
+  items in a sibling list, updated as the list is edited (`llm.active` over `llm.models`).
 - `json_schema_extra=SECRET` (`format: password`) masks a field.
 - `x-authorize` on a boolean field shows an Authorize button while the field is on (OAuth for MCP servers).
 

@@ -9,7 +9,19 @@ from fastapi import Depends, FastAPI
 from sirin.config import AppSettings
 from sirin.runtime import Runtime
 from sirin.web.deps import require_admin
-from sirin.web.routers import auth, history, my_servers, oauth, probes, settings, status, tts, users, voices
+from sirin.web.routers import (
+    auth,
+    history,
+    my_servers,
+    oauth,
+    probes,
+    reminders,
+    settings,
+    status,
+    tts,
+    users,
+    voices,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -54,7 +66,7 @@ def create_app(app_settings: AppSettings) -> FastAPI:
 
     # These set their own access: answers and the OAuth callback are open, the satellite and the OAuth provider
     # come without a session.
-    for module in (tts, oauth, auth, users, history, voices, my_servers):
+    for module in (tts, oauth, auth, users, history, voices, my_servers, reminders):
         app.include_router(module.router)
     for module in (status, settings, probes):
         app.include_router(module.router, dependencies=[Depends(require_admin)])

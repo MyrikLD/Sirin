@@ -1,4 +1,7 @@
-"""What people do with voices on the page: claim a turn as theirs, name, link, merge and delete voices."""
+"""What people do with voices on the page: claim a turn as theirs, link a voice to a person, delete it.
+
+A person may have several voices: each of them is recognized as that person.
+"""
 
 import sqlalchemy as sa
 from pydantic import AwareDatetime, BaseModel, Field
@@ -19,7 +22,6 @@ class NotAllowed(PermissionError):
 
 class VoiceOut(BaseModel):
     id: int
-    label: str | None
     person_id: int | None = Field(description="The person the voice is linked to; None for a voice nobody claimed")
     person_name: str | None
     created_at: AwareDatetime
@@ -42,7 +44,6 @@ async def list_voices(session: AsyncSession, viewer: Account) -> list[VoiceOut]:
     stmt = (
         sa.select(
             Voice.id,
-            Voice.label,
             Voice.user_id.label("person_id"),
             User.name.label("person_name"),
             Voice.created_at,
@@ -91,16 +92,13 @@ async def update_voice(
     session: AsyncSession,
     viewer: Account,
     voice_id: int,
-    label: str | None = None,
     person_id: int | None = None,
     unlink: bool = False,
 ) -> None:
-    """A member names or unlinks their own voice; the admin may also link any voice to any person."""
+    """A member unlinks their own voice; the admin links any voice to any person or to nobody."""
     owner = await _voice_owner(session, voice_id)
     _check_owner(viewer, owner)
     values: dict[str, object] = {}
-    if label is not None:
-        values["label"] = label.strip() or None
     if person_id is not None:
         if viewer.role != Role.ADMIN:
             raise NotAllowed("only an admin links a voice to another person")
@@ -117,32 +115,6 @@ async def delete_voice(session: AsyncSession, viewer: Account, voice_id: int) ->
     """Its turns stay in the history without a voice."""
     _check_owner(viewer, await _voice_owner(session, voice_id))
     await session.execute(sa.delete(Voice).where(Voice.id == voice_id))
-
-
-async def merge_voices(session: AsyncSession, viewer: Account, source_id: int, target_id: int) -> None:
-    """Moves the turns of source into target and deletes source: two voices that are one speaker."""
-    if source_id == target_id:
-        raise NotAllowed("a voice cannot be merged into itself")
-    rows = await session.execute(
-        sa.select(Voice.id, Voice.user_id, Voice.voiceprint.is_not(None).label("has_vp")).where(
-            Voice.id.in_([source_id, target_id])
-        )
-    )
-    found = {r.id: r for r in rows}
-    if source_id not in found or target_id not in found:
-        raise VoiceNotFound("no such voice")
-    source, target = found[source_id], found[target_id]
-    for voice in (source, target):
-        _check_owner(viewer, voice.user_id)
-    if source.user_id is not None and target.user_id is not None and source.user_id != target.user_id:
-        raise NotAllowed("the voices belong to different people")
-    await session.execute(sa.update(Turn).where(Turn.voice_id == source_id).values(voice_id=target_id))
-    values: dict[str, object] = {"user_id": target.user_id or source.user_id}
-    if not target.has_vp and source.has_vp:
-        values["voiceprint"] = sa.select(Voice.voiceprint).where(Voice.id == source_id).scalar_subquery()
-    await session.execute(sa.update(Voice).where(Voice.id == target_id).values(**values))
-    await session.execute(sa.delete(Voice).where(Voice.id == source_id))
-    await recompute_profile(session, target_id)
 
 
 async def _turn_voice(session: AsyncSession, turn_id: int) -> tuple[int | None, int | None]:

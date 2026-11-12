@@ -11,6 +11,7 @@ from pydantic import AwareDatetime, BaseModel
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import FunctionToolset
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirin import tables
 from sirin.agent import TurnDeps
@@ -65,6 +66,17 @@ def cron_next(schedule: str, after: datetime) -> datetime:
 Deliver = Callable[[Reminder], Awaitable[bool]]
 
 _COLUMNS = [getattr(tables.Reminder, name) for name in Reminder.model_fields]
+
+
+async def reminder_people(session: AsyncSession) -> dict[str, tuple[int, str]]:
+    """The person who set each reminder, by reminder id: the person of the voice of the turn that set it."""
+    rows = await session.execute(
+        sa.select(tables.Reminder.id, tables.User.id.label("person_id"), tables.User.name)
+        .join(tables.Turn, tables.Turn.id == tables.Reminder.turn_id)
+        .join(tables.Voice, tables.Voice.id == tables.Turn.voice_id)
+        .join(tables.User, tables.User.id == tables.Voice.user_id)
+    )
+    return {r.id: (r.person_id, r.name) for r in rows}
 
 
 def _set_due(reminder: Reminder) -> sa.Update:
@@ -132,8 +144,12 @@ class Reminders:
         self._schedule(reminder)
         return reminder
 
-    def pending(self, device: str) -> list[Reminder]:
-        return sorted((r for r in self._items.values() if r.device == device), key=lambda r: r.due)
+    def pending(self, device: str | None = None) -> list[Reminder]:
+        """Soonest first; all devices when device is None."""
+        return sorted((r for r in self._items.values() if device in (None, r.device)), key=lambda r: r.due)
+
+    def get(self, reminder_id: str) -> Reminder | None:
+        return self._items.get(reminder_id)
 
     async def cancel(self, device: str, reminder_id: str) -> bool:
         """Its task is left to find the reminder gone: the task may be the very run that calls this."""

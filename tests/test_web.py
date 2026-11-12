@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx2
 import pytest
@@ -163,10 +163,10 @@ async def test_a_member_sees_their_turns_and_unclaimed_ones(app, client):
         assert {t["id"] for t in (await boris.get("/api/history")).json()} == {boris_turn, nobody}
         (mine,) = (await anna.get("/api/voices")).json()
         assert (mine["id"], mine["turns"]) == (voices[0], 1)
-        assert (await anna.patch(f"/api/voices/{voices[0]}", json={"label": "far from the mic"})).status_code == 204
+        assert (await boris.patch(f"/api/voices/{voices[0]}", json={"unlink": True})).status_code == 403
     assert len((await client.get("/api/voices")).json()) == 2
     (only_anna,) = (await client.get("/api/history", params={"person_id": mine["person_id"]})).json()
-    assert (only_anna["id"], only_anna["voice_label"]) == (anna_turn, "far from the mic")
+    assert (only_anna["id"], only_anna["person_name"]) == (anna_turn, "Anna")
 
 
 async def test_personal_servers_belong_to_their_person(app, client):
@@ -195,3 +195,31 @@ async def test_personal_servers_belong_to_their_person(app, client):
     assert "headers" not in overview[0] and "url" not in overview[0]
     taken = await client.put("/api/settings", json={"mcp_servers": [shared, {"name": "mail", "url": "http://x/"}]})
     assert taken.status_code == 409
+
+
+async def test_reminders_are_shown_and_cancelled_by_their_person(app, client):
+    runtime = app.state.runtime
+    for login in ("anna", "boris"):
+        response = await client.post("/api/users", json={"login": login, "name": login.title(), "password": "x"})
+        assert response.status_code == 201
+    async with runtime.db.session() as session, session.begin():
+        voice = (
+            await session.execute(
+                sa.insert(Voice).values(embedding=b"\0" * 8, created_at=datetime.now(UTC)).returning(Voice.id)
+            )
+        ).scalar_one()
+    turn = await runtime.history.open_turn("kitchen", "c", datetime.now(UTC), voice, "remind me", None, None)
+    later = datetime.now(UTC) + timedelta(days=1)
+    hers = await runtime.reminders.add("kitchen", later, "stove", turn_id=turn)
+    nobodys = await runtime.reminders.add("kitchen", later + timedelta(hours=1), "door")
+
+    async with _logged_in(app, "anna", "x") as anna, _logged_in(app, "boris", "x") as boris:
+        assert (await anna.post(f"/api/history/{turn}/mine")).status_code == 204
+        assert [r["prompt"] for r in (await anna.get("/api/reminders")).json()] == ["stove", "door"]
+        assert [r["prompt"] for r in (await boris.get("/api/reminders")).json()] == ["door"]
+        assert (await boris.delete(f"/api/reminders/{hers.id}")).status_code == 403
+        assert (await boris.delete(f"/api/reminders/{nobodys.id}")).status_code == 403
+        assert (await anna.delete(f"/api/reminders/{hers.id}")).status_code == 204
+    (left,) = (await client.get("/api/reminders")).json()
+    assert (left["prompt"], left["person_name"]) == ("door", None)
+    assert (await client.delete(f"/api/reminders/{nobodys.id}")).status_code == 204

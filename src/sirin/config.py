@@ -14,6 +14,11 @@ CHOICES = {"x-choices": True}
 SECRET = {"format": "password"}
 
 
+def choices_from(list_field: str) -> dict[str, str]:
+    """A field shown as a dropdown of the names of the items in another list field of the same block."""
+    return {"x-choices-from": list_field}
+
+
 def probed(path: str) -> ConfigDict:
     """A block with a Test button that POSTs the block's unsaved values to path."""
     return ConfigDict(json_schema_extra={"x-probe": path})
@@ -80,13 +85,28 @@ class VadConfig(BaseModel):
     max_utterance_ms: int = Field(default=15000, description="Hard cap on one utterance")
 
 
-class LLMConfig(BaseModel):
+class LLMModelConfig(BaseModel):
+    """One language model the assistant can use; the block's active field picks the one in use."""
+
     model_config = probed("/api/probe/llm")
 
+    name: str = Field(description="A name to pick it by")
     base_url: str = Field(default="http://127.0.0.1:8080/v1", description="OpenAI-compatible base URL")
     model: str = Field(default="", json_schema_extra=CHOICES)
     api_key: str | None = Field(
         default=None, description="Bearer token, if the server needs one", json_schema_extra=SECRET
+    )
+    temperature: float = 0.3
+
+
+class LLMConfig(BaseModel):
+    models: list[LLMModelConfig] = Field(
+        default_factory=lambda: [LLMModelConfig(name="local")], min_length=1, description="The models to choose from"
+    )
+    active: str | None = Field(
+        default=None,
+        description="The model in use; the first one when empty",
+        json_schema_extra=choices_from("models"),
     )
     system_prompt: str = Field(
         default=(
@@ -100,8 +120,21 @@ class LLMConfig(BaseModel):
         default="Sorry, something went wrong. Please try again.",
         description="Spoken when the model fails; when empty, the device signals an error instead",
     )
-    temperature: float = 0.3
     conversation_ttl_s: int = Field(default=300, description="Idle time after which dialog history is dropped")
+
+    @property
+    def current(self) -> LLMModelConfig:
+        """The model in use."""
+        return next((m for m in self.models if m.name == self.active), self.models[0])
+
+    @model_validator(mode="after")
+    def _known_active(self) -> Self:
+        names = [m.name for m in self.models]
+        if len(names) != len(set(names)):
+            raise ValueError("model names must be unique")
+        if self.active is not None and self.active not in names:
+            raise ValueError(f"the active model {self.active!r} is not in the list")
+        return self
 
     @field_validator("system_prompt")
     @classmethod

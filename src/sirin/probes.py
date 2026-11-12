@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from sirin.agent import explain_connect_error, list_server_tools
-from sirin.config import DeviceConfig, LLMConfig, McpServerConfig, SttConfig, TtsConfig
+from sirin.config import DeviceConfig, LLMModelConfig, McpServerConfig, SttConfig, TtsConfig
 from sirin.oauth import OAuthManager
 from sirin.satellite import device_client, voice_features, voice_support_problem
 from sirin.speech import describe
@@ -80,7 +80,7 @@ async def probe_tts(cfg: TtsConfig) -> ProbeResult:
 
 
 @_guard
-async def probe_llm(cfg: LLMConfig) -> ProbeResult:
+async def probe_llm(cfg: LLMModelConfig) -> ProbeResult:
     client = AsyncOpenAI(base_url=cfg.base_url, api_key=cfg.api_key or "none", timeout=PROBE_TIMEOUT_S, max_retries=0)
     async with client:
         ids = sorted([model.id async for model in client.models.list()])

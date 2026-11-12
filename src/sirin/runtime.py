@@ -157,6 +157,12 @@ class Runtime:
             items={
                 "devices": {s.cfg.name: s.status for s in self._satellites},
                 "mcp_servers": dict(self._services.agent.tool_status) if self._services else {},
+                "models": {
+                    m.name: ItemStatus(state="ok", detail="in use")
+                    if m is self.settings.llm.current
+                    else ItemStatus(state="pending", detail="not in use")
+                    for m in self.settings.llm.models
+                },
             }
         )
 

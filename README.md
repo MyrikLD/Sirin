@@ -58,7 +58,7 @@ forgotten password is replaced with `sirin --reset-password <login>` (in the con
 `docker compose exec sirin sirin --reset-password admin`). The admin adds people in the **People** card; a member can
 log in and change their own password, and only an admin sees and edits the settings. The satellites need no login.
 
-Fill in devices, STT, TTS, LLM and MCP servers. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
+Fill in devices, STT, TTS, LLM and MCP servers. The LLM block can hold several models (for example a local one and a cloud one); `active` picks the one in use, and the system prompt is shared by all of them. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
 the SQLite database `data/sirin.db` and applied without a restart. The JSON files of older versions (`settings.json`, `reminders.json`, `oauth/`) are not
 read: configure a new install from the page.
 
@@ -104,8 +104,9 @@ Dialog history is kept per device `conversation_id` for `conversation_ttl_s` sec
 With the voice models in place, every speaker the devices hear becomes a voice: a turn of 1.5 seconds of speech or
 more that matches no known voice creates one, and it is recognized from then on. Nobody has to introduce themselves.
 On the **Voices** tab and in **History**, a person claims a voice: open a turn you said and press **This is me**. The
-voice is then yours, and so are its past turns. Merge two voices that turned out to be one speaker; **Not this voice**
-takes a wrongly matched turn out of a voice. A member sees and manages only their own voices; the admin sees all of
+voice is then yours, and so are its past turns. One person can own several voices (one speaker split in two, or a
+voice far from the microphone): each is recognized as that person. **Not this voice** takes a wrongly matched turn
+out of a voice. A member sees and manages only their own voices; the admin sees all of
 them, links them to people and deletes the unclaimed ones. An unclaimed voice disappears by itself once the history
 retention has removed its last turn.
 
@@ -131,7 +132,7 @@ Limits:
 - If another voice is as loud as the speaker and talks at the same time, the network can keep the wrong one. That stretch is muted and the command is lost or cut.
 - It is a convenience, not access control: a recording of a voice passes as that voice.
 - Isolation takes about a quarter of one CPU core while a claimed voice speaks.
-- How well short far-field phrases group into voices has not been measured yet; expect to merge some voices by hand.
+- How well short far-field phrases group into voices has not been measured yet; expect one person to collect several voices at first.
 
 ### Personal tools
 
@@ -154,6 +155,6 @@ still pending.
 
 ### Reminders
 
-The agent has built-in tools `set_reminder`, `list_reminders` and `cancel_reminder` ("remind me to turn off the stove in 10 minutes", "remind me tomorrow to eat", "every day at 8 tell me the weather", "every hour from 8 to 10 until Friday remind me to drink water"). A recurring reminder has a cron schedule in local time (`0 8-10 * * *`) and repeats until it is canceled or until its end time. When it sets a reminder, the LLM writes a note to itself. At the due time the agent runs that note, with all its tools, and the device that set the reminder announces the answer. Reminders are kept in the database and survive a restart. If the device is offline, the reminder is retried every 30 s for up to an hour, then dropped. Reminders that came due while the service was down are dropped at startup; a recurring reminder skips that occurrence and stays scheduled for its next time.
+The agent has built-in tools `set_reminder`, `list_reminders` and `cancel_reminder` ("remind me to turn off the stove in 10 minutes", "remind me tomorrow to eat", "every day at 8 tell me the weather", "every hour from 8 to 10 until Friday remind me to drink water"). A recurring reminder has a cron schedule in local time (`0 8-10 * * *`) and repeats until it is canceled or until its end time. When it sets a reminder, the LLM writes a note to itself. At the due time the agent runs that note, with all its tools, and the device that set the reminder announces the answer. Reminders are kept in the database and survive a restart. The **Reminders** tab lists the pending ones with who set them (the person of the voice that asked) and cancels them: a member sees and cancels their own and sees the ones nobody is known to have set; the admin sees and cancels all. If the device is offline, the reminder is retried every 30 s for up to an hour, then dropped. Reminders that came due while the service was down are dropped at startup; a recurring reminder skips that occurrence and stays scheduled for its next time.
 
 Times are in the process's local time zone, the same one `now()` in the system prompt uses. In the container, set it with `TZ` (see `docker-compose.yml`).

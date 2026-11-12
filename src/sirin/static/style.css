@@ -71,3 +71,6 @@ button.remove { padding: 2px 8px; }
 .server .probe .primary { padding: 5px 14px; }
 .item > summary .hint { margin: 0; }
 .item > summary .name.text { font-family: inherit; }
+.reminder { padding: 8px 12px; }
+.reminder .what { display: flex; gap: 10px; align-items: baseline; margin-top: 4px; }
+.reminder .what > span:first-child { flex: 1; overflow-wrap: anywhere; }

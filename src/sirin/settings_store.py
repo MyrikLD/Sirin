@@ -1,12 +1,16 @@
+import logging
 from typing import Any
 
 import sqlalchemy as sa
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirin.config import McpServerConfig, RuntimeSettings
 from sirin.database import Database
 from sirin.tables import McpServer, McpToken, Setting
+
+_log = logging.getLogger(__name__)
 
 # The blocks of RuntimeSettings kept as rows of `settings`; MCP servers have a table of their own.
 BLOCKS = [name for name in RuntimeSettings.model_fields if name != "mcp_servers"]
@@ -34,7 +38,7 @@ async def load_settings(session: AsyncSession) -> RuntimeSettings:
         .where(McpServer.owner_id.is_(None))
         .order_by(McpServer.id)
     )
-    return RuntimeSettings.model_validate(blocks | {"mcp_servers": [dict(r) for r in rows.mappings()]})
+    return RuntimeSettings.model_validate(_valid_blocks(blocks) | {"mcp_servers": [dict(r) for r in rows.mappings()]})
 
 
 async def save_settings(session: AsyncSession, settings: RuntimeSettings) -> None:
@@ -51,6 +55,19 @@ async def save_settings(session: AsyncSession, settings: RuntimeSettings) -> Non
 async def _stored_blocks(session: AsyncSession) -> dict[str, Any]:
     rows = await session.execute(sa.select(Setting.name, Setting.value).where(Setting.name.in_(BLOCKS)))
     return {r.name: r.value for r in rows}
+
+
+def _valid_blocks(blocks: dict[str, Any]) -> dict[str, Any]:
+    """The stored blocks that fit the current RuntimeSettings; one written by another version starts from defaults."""
+    valid = {}
+    for name, value in blocks.items():
+        try:
+            TypeAdapter(RuntimeSettings.model_fields[name].annotation).validate_python(value)
+        except ValidationError as exc:
+            _log.warning("the stored %r settings do not fit this version and are replaced by defaults: %s", name, exc)
+            continue
+        valid[name] = value
+    return valid
 
 
 async def _save_shared_servers(session: AsyncSession, servers: list[McpServerConfig]) -> None:

@@ -25,7 +25,6 @@ class TurnOut(BaseModel):
     device: str
     conversation_id: str
     voice_id: int | None = Field(description="The voice that spoke; None when it was not recognized or too short")
-    voice_label: str | None
     person_id: int | None = Field(description="The person the voice is linked to")
     person_name: str | None
     voice_confirmed: bool = Field(description="The person said this turn is theirs")
@@ -45,7 +44,6 @@ _SELECT = (
         Turn.device,
         Turn.conversation_id,
         Turn.voice_id,
-        Voice.label.label("voice_label"),
         Voice.user_id.label("person_id"),
         User.name.label("person_name"),
         Turn.voice_confirmed,
