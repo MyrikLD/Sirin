@@ -6,7 +6,6 @@ from sirin.agent import Agent
 from sirin.clips import ClipStore
 from sirin.config import AppSettings, RuntimeSettings
 from sirin.database import Database
-from sirin.legacy import import_files
 from sirin.oauth import OAuthManager
 from sirin.pipeline import Services
 from sirin.reminders import Reminder, Reminders, reminder_tools
@@ -30,7 +29,6 @@ class Runtime:
     def __init__(self, app_settings: AppSettings) -> None:
         public_url = str(app_settings.public_url) if app_settings.public_url else None
         self.clips = ClipStore(public_url, app_settings.port, app_settings.audio_ttl_s)
-        self._data_dir = app_settings.data_dir
         self.db = Database.in_dir(app_settings.data_dir)
         self.oauth = OAuthManager(self.db, self._on_authorized)
         self.board = StatusBoard()
@@ -50,7 +48,6 @@ class Runtime:
 
     async def start(self) -> None:
         await self.db.migrate()
-        await import_files(self.db, self._data_dir)
         async with self.db.session() as session, session.begin():
             password = await ensure_admin(session)
         if password is not None:

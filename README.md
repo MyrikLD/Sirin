@@ -59,8 +59,8 @@ forgotten password is replaced with `sirin --reset-password <login>` (in the con
 log in and change their own password, and only an admin sees and edits the settings. The satellites need no login.
 
 Fill in devices, STT, TTS, LLM and MCP servers. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
-the SQLite database `data/sirin.db` and applied without a restart. A `settings.json`, `reminders.json` and `oauth/`
-from an older version are imported into an empty database at start and then renamed with an `.imported` suffix.
+the SQLite database `data/sirin.db` and applied without a restart. The JSON files of older versions (`settings.json`, `reminders.json`, `oauth/`) are not
+read: configure a new install from the page.
 
 Environment variables (or `.env`):
 

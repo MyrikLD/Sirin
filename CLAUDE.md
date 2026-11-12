@@ -26,8 +26,8 @@ docker compose up -d --build  # container; bridge network, needs SIRIN_PUBLIC_UR
 CI (`.github/workflows/ci.yml`) runs `uv lock --check`, ruff, an import check and pytest, then builds the image for
 amd64 and arm64 and pushes it to GHCR on `main` and `v*` tags. Python 3.14 only.
 
-Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, settings store and the import
-of old files, live clips, VAD timeout, the speaker gate and voice store with fake models, MCP isolation and reconnect,
+Tests cover a few basics only (sentence splitting, prompt sandbox, settings validation, settings store, live clips,
+VAD timeout, the speaker gate and voice store with fake models, MCP isolation and reconnect,
 history cap, spoken error reply, follow-up after a question, partial rebuild, settings API, reminder scheduling and
 tools). Tests need network once: `conftest.py` downloads the VAD model into the pytest cache. Unit tests take the `db`
 fixture, an in-memory database migrated to head.
@@ -44,8 +44,7 @@ SQLite through SQLAlchemy async (`aiosqlite`), see `plan.md` for where it is goi
   migrations in `migrations/` at every start, with foreign keys off while it runs (batch mode recreates tables).
   `alembic.ini` is for the command line only. Store code takes an `AsyncSession` and does not commit; the caller opens
   `async with db.session() as s, s.begin():`.
-- `legacy.py`: at start, the JSON files of older versions are imported into a database without settings and renamed
-  `*.imported`. `data/voices/` is not imported.
+- There is no compatibility with older versions yet: their JSON files in `data/` are not read.
 - `users` and `sessions` hold the login (see Login below).
 
 ## Architecture

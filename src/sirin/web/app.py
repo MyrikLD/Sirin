@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from sirin.config import AppSettings
 from sirin.runtime import Runtime
@@ -59,5 +58,5 @@ def create_app(app_settings: AppSettings) -> FastAPI:
     for module in (status, settings, probes):
         app.include_router(module.router, dependencies=[Depends(require_admin)])
     # Mounted last: a mount at "/" would otherwise shadow the routes above.
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.frontend("/", directory=STATIC_DIR)
     return app
