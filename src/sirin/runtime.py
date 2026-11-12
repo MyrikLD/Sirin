@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from sirin.accounts import FIRST_ADMIN_LOGIN, ensure_admin
 from sirin.agent import Agent
 from sirin.clips import ClipStore
 from sirin.config import AppSettings, RuntimeSettings
@@ -50,6 +51,10 @@ class Runtime:
     async def start(self) -> None:
         await self.db.migrate()
         await import_files(self.db, self._data_dir)
+        async with self.db.session() as session, session.begin():
+            password = await ensure_admin(session)
+        if password is not None:
+            _log.warning("created the account %r with password %r: log in and change it", FIRST_ADMIN_LOGIN, password)
         async with self._lock:
             await self._apply(await self._store.load(), reconnect_tools=False)
         await self.reminders.start()

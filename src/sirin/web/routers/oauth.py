@@ -1,13 +1,13 @@
 from html import escape
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from mcp.client.auth import OAuthClientProvider
 from pydantic import BaseModel, Field
 
 from sirin.agent import list_server_tools
 from sirin.config import McpServerConfig
-from sirin.web.deps import RuntimeDep
+from sirin.web.deps import RuntimeDep, require_admin
 
 router = APIRouter()
 
@@ -16,7 +16,7 @@ class AuthorizeResponse(BaseModel):
     url: str | None = Field(description="Login page to open; None when the stored tokens already work")
 
 
-@router.post("/api/oauth/authorize")
+@router.post("/api/oauth/authorize", dependencies=[Depends(require_admin)])
 async def post_oauth_authorize(cfg: McpServerConfig, runtime: RuntimeDep, request: Request) -> AuthorizeResponse:
     oauth = runtime.oauth
     if not cfg.oauth:

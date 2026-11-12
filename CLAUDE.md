@@ -46,7 +46,7 @@ SQLite through SQLAlchemy async (`aiosqlite`), see `plan.md` for where it is goi
   `async with db.session() as s, s.begin():`.
 - `legacy.py`: at start, the JSON files of older versions are imported into a database without settings and renamed
   `*.imported`. `data/voices/` is not imported.
-- `users` exists for the coming login; nothing uses it yet.
+- `users` and `sessions` hold the login (see Login below).
 
 ## Architecture
 
@@ -146,10 +146,19 @@ pages do not hold up shutdown.
 deltas as `SynthesizeChunk`; if not, `split_sentences` cuts the text and each sentence is a separate `Synthesize`.
 
 Web layer (`web/`): FastAPI app built in `create_app()`. `Runtime` is the only object on `app.state`; routes reach
-it through `RuntimeDep` (`web/deps.py`) and use its `clips`, `oauth` and `board`. The static mount at `/` must stay
-last.
+it through `RuntimeDep` (`web/deps.py`) and use its `clips`, `oauth`, `board` and `db`. `SessionDep` is one
+transaction per request, committed before the response (`scope="function"`). The static mount at `/` must stay last.
 
-Settings page (`static/index.html`) is a single vanilla-JS file that renders forms from
+Login (`accounts.py`, `web/routers/auth.py`, `web/routers/users.py`): local accounts with roles `admin` and `member`,
+scrypt password hashes, and a session token in an HttpOnly, SameSite=Lax cookie; the `sessions` table keeps only its
+SHA-256. `AccountDep` answers 401 without a valid session, `AdminDep` / `require_admin` 403 for a member. Settings,
+probes, status and the OAuth start are admin-only (dependencies in `create_app()`); `/tts/{id}.wav`, `/oauth/callback`,
+`/api/auth/login` and the static files are open. A changed password ends the account's other sessions; the last admin
+cannot be deleted or demoted. When there are no accounts, `Runtime.start()` creates `admin` and logs its generated
+password; `sirin --reset-password LOGIN` prints a new one.
+
+Settings page (`static/index.html`, ES modules without a build step: `lib.js` has `el()` and `api()`, which sends
+the browser to `login.html` on a 401; `account.js` has the account bar and the People card) renders forms from
 `GET /api/settings/schema` (the `RuntimeSettings` JSON schema). It hard-codes no block or field name; behaviour comes
 from the schema, so changing `config.py` changes the page:
 - `title` on a `RuntimeSettings` field is the section heading; field `description`s become help text.

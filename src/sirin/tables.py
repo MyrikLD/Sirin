@@ -45,6 +45,17 @@ class User(Base):
     created_at = sa.Column(UtcDateTime, nullable=False)
 
 
+class LoginSession(Base):
+    """A login on the web page; the browser holds the token in a cookie, the table only its hash."""
+
+    __tablename__ = "sessions"
+
+    id = sa.Column(sa.String, primary_key=True)
+    user_id = sa.Column(sa.Integer, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = sa.Column(UtcDateTime, nullable=False)
+    expires_at = sa.Column(UtcDateTime, nullable=False)
+
+
 class Setting(Base):
     """One block of RuntimeSettings, or one single value, as JSON."""
 

@@ -4,12 +4,13 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from sirin.config import AppSettings
 from sirin.runtime import Runtime
-from sirin.web.routers import oauth, probes, settings, status, tts
+from sirin.web.deps import require_admin
+from sirin.web.routers import auth, oauth, probes, settings, status, tts, users
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -52,8 +53,11 @@ def create_app(app_settings: AppSettings) -> FastAPI:
     app = FastAPI(title="sirin", lifespan=lifespan)
     app.state.runtime = runtime
 
-    for module in (status, tts, settings, probes, oauth):
+    # Open: the satellite downloads answers without credentials, and the OAuth provider sends the browser back.
+    for module in (tts, oauth, auth, users):
         app.include_router(module.router)
+    for module in (status, settings, probes):
+        app.include_router(module.router, dependencies=[Depends(require_admin)])
     # Mounted last: a mount at "/" would otherwise shadow the routes above.
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

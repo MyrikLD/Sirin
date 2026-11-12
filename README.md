@@ -52,7 +52,13 @@ docker compose up -d --build
 
 The compose file publishes port 8765 from a bridge network, where Sirin cannot see the address satellites reach it at, so set `SIRIN_PUBLIC_URL=http://<host LAN address>:8765` in `.env`; compose refuses to start without it. Settings are kept in `./data`. CI publishes a multi-arch image (amd64, arm64) to `ghcr.io/<owner>/sirin`, which the compose file pulls unless you pass `--build`.
 
-Then open `http://<host>:8765/` and fill in devices, STT, TTS, LLM and MCP servers. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
+Then open `http://<host>:8765/` and log in. At the first start Sirin creates the account `admin` and writes its
+generated password to the log (`docker compose logs sirin`); change it with **Password** at the top of the page. A
+forgotten password is replaced with `sirin --reset-password <login>` (in the container:
+`docker compose exec sirin sirin --reset-password admin`). The admin adds people in the **People** card; a member can
+log in and change their own password, and only an admin sees and edits the settings. The satellites need no login.
+
+Fill in devices, STT, TTS, LLM and MCP servers. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
 the SQLite database `data/sirin.db` and applied without a restart. A `settings.json`, `reminders.json` and `oauth/`
 from an older version are imported into an empty database at start and then renamed with an `.imported` suffix.
 

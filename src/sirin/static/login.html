@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sirin login</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <section class="card login">
+    <h2>Sirin</h2>
+    <form id="login">
+      <div class="field"><label for="user">login</label><input id="user" autocomplete="username" required autofocus></div>
+      <div class="field"><label for="password">password</label><input id="password" type="password" autocomplete="current-password" required></div>
+      <div class="row"><button class="primary">Log in</button><span id="msg" class="err"></span></div>
+    </form>
+  </section>
+</main>
+<script type="module">
+import { api } from "./lib.js";
+
+const form = document.getElementById("login");
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById("msg");
+  msg.textContent = "";
+  try {
+    await api("/api/auth/login", { login: form.user.value, password: form.password.value });
+    // Only a path on this site: the parameter comes from the URL anyone can craft.
+    const next = new URLSearchParams(location.search).get("next") || "/";
+    location.href = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+  } catch (err) { msg.textContent = err.message; }
+});
+</script>
+</body>
+</html>
