@@ -1,10 +1,12 @@
 import asyncio
 
-from pydantic_ai import ModelRequest, ModelResponse, TextPart, UserPromptPart
+import pytest
+from pydantic_ai import ModelRequest, ModelResponse, TextPart, UnexpectedModelBehavior, UserPromptPart
+from pydantic_ai.models.function import AgentInfo, DeltaThinkingPart, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 
 from sirin import agent as agent_module
-from sirin.agent import MAX_HISTORY_TURNS, Agent, PersonalServer, TurnDeps, _last_turns
+from sirin.agent import MAX_HISTORY_TURNS, OUTPUT_RETRIES, Agent, PersonalServer, TurnDeps, _last_turns
 from sirin.config import LLMConfig, McpServerConfig
 from sirin.oauth import OAuthManager
 
@@ -91,3 +93,26 @@ def test_history_keeps_the_last_turns_whole():
     assert len(kept) == MAX_HISTORY_TURNS * 2
     assert isinstance(kept[0], ModelRequest)
     assert _last_turns(turn * 2) == turn * 2
+
+
+async def test_an_empty_model_response_is_asked_again_and_logged(db, caplog):
+    answers = iter([{0: DeltaThinkingPart(content="hmm")}, "Done."])
+
+    async def stream(messages: list, info: AgentInfo):
+        yield next(answers)
+
+    agent = Agent(LLMConfig(), [], OAuthManager(db, _ignore), lambda: None, [])
+    with agent._agent.override(model=FunctionModel(stream_function=stream)):
+        assert await agent.reply("dialog", "Hello", TurnDeps(device="kitchen")) == "Done."
+    [record] = [r for r in caplog.records if "empty model response" in r.message]
+    assert "[dialog]" in record.message and "'thinking'" in record.message
+
+
+async def test_a_model_that_stays_empty_fails_and_every_response_is_logged(db, caplog):
+    async def stream(messages: list, info: AgentInfo):
+        yield {0: DeltaThinkingPart(content="hmm")}
+
+    agent = Agent(LLMConfig(), [], OAuthManager(db, _ignore), lambda: None, [])
+    with agent._agent.override(model=FunctionModel(stream_function=stream)), pytest.raises(UnexpectedModelBehavior):
+        await agent.reply("dialog", "Hello", TurnDeps(device="kitchen"))
+    assert len([r for r in caplog.records if "empty model response" in r.message]) == OUTPUT_RETRIES + 1

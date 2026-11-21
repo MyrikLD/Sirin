@@ -17,6 +17,7 @@ from pydantic_ai import (
     FunctionToolResultEvent,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     ModelSettings,
     PartDeltaEvent,
     PartEndEvent,
@@ -24,8 +25,10 @@ from pydantic_ai import (
     RunContext,
     TextPart,
     TextPartDelta,
+    ToolCallPart,
     UsageLimits,
     UserPromptPart,
+    capture_run_messages,
 )
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ERROR_OUTCOMES
@@ -215,9 +218,25 @@ class Agent:
 
     async def stream_reply(self, conversation_id: str, text: str, turn: TurnDeps) -> AsyncIterator[str]:
         calls: dict[str, ToolCall] = {}
+        history = self._messages(conversation_id)
+        with capture_run_messages() as messages:
+            try:
+                async for delta in self._stream(conversation_id, text, turn, history, calls):
+                    yield delta
+            finally:
+                _log_empty_responses(conversation_id, messages, history)
+
+    async def _stream(
+        self,
+        conversation_id: str,
+        text: str,
+        turn: TurnDeps,
+        history: list[ModelMessage],
+        calls: dict[str, ToolCall],
+    ) -> AsyncIterator[str]:
         async with self._agent.run_stream_events(
             turn.tagged(text),
-            message_history=self._messages(conversation_id),
+            message_history=history,
             deps=turn,
             usage_limits=UsageLimits(request_limit=MAX_TOOL_ROUNDS + 1),
             # The built-in tools go last: their descriptions carry the current time, and an LLM server reuses its
@@ -255,6 +274,24 @@ class Agent:
         now = time.monotonic()
         self._history = {k: v for k, v in self._history.items() if now - v[0] < self._cfg.conversation_ttl_s}
         return self._history.get(conversation_id, (now, []))[1]
+
+
+def _log_empty_responses(conversation_id: str, messages: list[ModelMessage], history: list[ModelMessage]) -> None:
+    """Warns about each response of this run with neither text nor a tool call: the model was asked again."""
+    old = {id(message) for message in history}
+    for message in messages:
+        if id(message) in old or not isinstance(message, ModelResponse):
+            continue
+        if any(isinstance(part, ToolCallPart) or isinstance(part, TextPart) and part.content for part in message.parts):
+            continue
+        _log.warning(
+            "[%s] empty model response: finish_reason=%s, parts=%s, usage=%s, details=%s",
+            conversation_id,
+            message.finish_reason,
+            [part.part_kind for part in message.parts],
+            message.usage,
+            message.provider_details,
+        )
 
 
 def _last_turns(messages: list[ModelMessage]) -> list[ModelMessage]:
