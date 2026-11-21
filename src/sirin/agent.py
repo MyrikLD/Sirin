@@ -44,6 +44,9 @@ _log = logging.getLogger(__name__)
 # Tool-call rounds before the agent gives up on an answer.
 MAX_TOOL_ROUNDS = 8
 LLM_TIMEOUT_S = 60
+# Times the model is asked again after a response with neither text nor a tool call. Some OpenAI-compatible
+# servers give such an empty response, for example after a tool result, and more than once in a row.
+OUTPUT_RETRIES = 3
 # User turns of a dialog that the model sees again; older ones are forgotten.
 MAX_HISTORY_TURNS = 20
 # Pause before an MCP server that failed or was lost is tried again; it doubles up to the maximum.
@@ -143,6 +146,7 @@ class Agent:
             deps_type=TurnDeps,
             instructions=self._render_prompt,
             model_settings=ModelSettings(temperature=model.temperature, timeout=LLM_TIMEOUT_S),
+            retries={"output": OUTPUT_RETRIES},
         )
 
     async def start(self) -> None:
