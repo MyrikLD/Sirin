@@ -156,7 +156,8 @@ file fails at start:
   (`KEEP_THRESHOLD`) and mutes the ones in another voice. The verification is required: with its voice absent the
   network lets another voice through. `gate.speaker` is the voice id. The thresholds are constants.
 - `PipelineRun` passes the voice id, the person's name and the turn's speech to the agent in `TurnDeps`;
-  `TurnDeps.tagged()` puts the name in front of the user turn (`[Voice: Anna]`) and `Agent._render_prompt` explains
+  `TurnDeps.tagged()` puts the name in front of the user turn (`[Voice: Anna]`), then the local time (`[Time: ...]`,
+  on every turn; a clock in the prompt or a tool description would cost the LLM server its prompt cache), and `Agent._render_prompt` explains
   the tag. The agent has no voice tools: linking happens on the page after login, since a voice gives access.
 - Access: a member sees and changes only voices linked to them; unlinked voices are the admin's. History shows a
   member their own turns and those of no person (`history.visible_to()`).

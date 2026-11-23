@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import UTC, datetime
 
 import numpy as np
@@ -202,10 +203,13 @@ async def test_claiming_a_turn_links_its_voice_and_only_its_owner_changes_it(db,
 
 def test_turn_carries_the_voice_only_when_voices_are_recognized():
     speech = _audio((ANNA, 1))
-    assert TurnDeps(device="kitchen", speaker="Anna", speech=speech).tagged("hi") == "[Voice: Anna] hi"
-    assert TurnDeps(device="kitchen", speech=speech).tagged("hi") == "[Voice: not recognized] hi"
-    assert TurnDeps(device="kitchen").tagged("hi") == "hi"
-    assert TurnDeps(device="kitchen", speech=np.zeros(0, np.float32)).tagged("(silence)") == "(silence)"
+    time = r"\[Time: \d{4}-\d\d-\d\d \d\d:\d\d, \w+\]"
+    anna, unknown = TurnDeps(device="kitchen", speaker="Anna", speech=speech), TurnDeps(device="kitchen", speech=speech)
+    assert re.fullmatch(rf"\[Voice: Anna\] {time} hi", anna.tagged("hi"))
+    assert re.fullmatch(rf"\[Voice: not recognized\] {time} hi", unknown.tagged("hi"))
+    assert re.fullmatch(rf"{time} hi", TurnDeps(device="kitchen").tagged("hi"))
+    silent = TurnDeps(device="kitchen", speech=np.zeros(0, np.float32))
+    assert re.fullmatch(rf"{time} \(silence\)", silent.tagged("(silence)"))
 
 
 def test_fbank_has_a_row_per_10_ms_and_no_mean():

@@ -2,14 +2,12 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import sqlalchemy as sa
 from cronsim import CronSim, CronSimError
 from pydantic import AwareDatetime, BaseModel
 from pydantic_ai import ModelRetry, RunContext
-from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import FunctionToolset
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -210,16 +208,11 @@ class Reminders:
             return True
 
 
-async def _with_local_time(ctx: RunContext[TurnDeps], tool_def: ToolDefinition) -> ToolDefinition:
-    now = datetime.now().astimezone()
-    return replace(tool_def, description=f"{tool_def.description}\n\nCurrent local time: {now:%Y-%m-%d %H:%M, %A}.")
-
-
 def reminder_tools(reminders: Reminders) -> FunctionToolset[TurnDeps]:
     # The tools are async: pydantic-ai runs a plain def in a worker thread, and Reminders belongs to the event loop.
     tools = FunctionToolset[TurnDeps]()
 
-    @tools.tool(prepare=_with_local_time)
+    @tools.tool
     async def set_reminder(
         ctx: RunContext[TurnDeps],
         prompt: str,
@@ -245,7 +238,7 @@ def reminder_tools(reminders: Reminders) -> FunctionToolset[TurnDeps]:
             until: Local date and time after which a recurring reminder stops, e.g. "until Friday".
         """
         now = datetime.now().astimezone()
-        # A time without an offset is local time, the same clock the prompt's now() shows.
+        # A time without an offset is local time, the same clock the user message shows.
         start, end = (t.astimezone() if t is not None else None for t in (at, until))
         if repeat is not None:
             if in_minutes is not None:
@@ -274,7 +267,7 @@ def reminder_tools(reminders: Reminders) -> FunctionToolset[TurnDeps]:
             return f"Recurring reminder {reminder.id} ({repeat}{ends}) is set; first at {first}."
         return f"Reminder {reminder.id} is set for {first}."
 
-    @tools.tool(prepare=_with_local_time)
+    @tools.tool
     async def list_reminders(ctx: RunContext[TurnDeps]) -> list[dict[str, str]]:
         """Lists the pending reminders of this device, soonest first; a recurring one shows its next time."""
         return [

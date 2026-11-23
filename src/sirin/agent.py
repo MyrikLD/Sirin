@@ -3,6 +3,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime
 from typing import Any
 
 import httpx2
@@ -57,6 +58,11 @@ RECONNECT_MIN_S = 2.0
 RECONNECT_MAX_S = 60.0
 # What the voice tag of a user turn says when the voice is none of the remembered ones.
 UNKNOWN_VOICE = "not recognized"
+# Added to the system prompt of every turn.
+TIME_INSTRUCTIONS = (
+    "Each user turn carries a tag such as [Time: 2026-01-31 18:05, Saturday]: the local time it was said. The last "
+    "one is the current time. Never say the tag aloud or write one yourself."
+)
 # Added to the system prompt while voices are recognized. The name is in the turn and not here because the
 # people of one dialog can differ from turn to turn, and a model reads a fact next to the question more
 # reliably than one at the end of a long prompt.
@@ -98,7 +104,12 @@ class TurnDeps(BaseModel):
         return self.speaker or UNKNOWN_VOICE
 
     def tagged(self, text: str) -> str:
-        """text as the model gets it: with whose voice said it, when voices are recognized."""
+        """text as the model gets it: with the local time and, when voices are recognized, whose voice said it.
+
+        The time is here because the message keeps its text in the history, so the prompt cache of the LLM server
+        stays valid from one minute to the next.
+        """
+        text = f"[Time: {datetime.now().astimezone():%Y-%m-%d %H:%M, %A}] {text}"
         if self.speech is None or not len(self.speech):
             return text
         return f"[Voice: {self.voice}] {text}"
@@ -204,7 +215,7 @@ class Agent:
         return True
 
     def _render_prompt(self, ctx: RunContext[TurnDeps]) -> str:
-        prompt = self._prompt.render()
+        prompt = f"{self._prompt.render()}\n\n{TIME_INSTRUCTIONS}"
         return prompt if ctx.deps.speech is None else f"{prompt}\n\n{VOICE_INSTRUCTIONS}"
 
     async def close(self) -> None:
@@ -239,8 +250,6 @@ class Agent:
             message_history=history,
             deps=turn,
             usage_limits=UsageLimits(request_limit=MAX_TOOL_ROUNDS + 1),
-            # The built-in tools go last: their descriptions carry the current time, and an LLM server reuses its
-            # prompt cache only up to the first changed token.
             toolsets=[*self._toolsets_for(turn), *self._builtin_tools],
         ) as events:
             async for event in events:
