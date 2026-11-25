@@ -55,6 +55,11 @@ class DeviceConfig(BaseModel):
     noise_psk: str | None = Field(
         default=None, description="api.encryption.key from the ESPHome YAML", json_schema_extra=SECRET
     )
+    wake_word: str | None = Field(
+        default=None,
+        description="Wake word to select on the device; its own choice when empty. Press Test to list the words",
+        json_schema_extra=CHOICES,
+    )
 
 
 class SttConfig(BaseModel):

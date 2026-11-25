@@ -118,6 +118,11 @@ async def probe_device(cfg: DeviceConfig) -> ProbeResult:
         if wake.available_wake_words:
             names = ", ".join(w.wake_word for w in wake.available_wake_words)
             details.append(f"wake words: {names} (active: {', '.join(wake.active_wake_words) or 'none'})")
-        return ProbeResult(ok=True, message=f"Connected to {info.friendly_name or info.name}", details=details)
+        return ProbeResult(
+            ok=True,
+            message=f"Connected to {info.friendly_name or info.name}",
+            details=details,
+            options={"wake_word": [w.id for w in wake.available_wake_words]},
+        )
     finally:
         await client.disconnect()

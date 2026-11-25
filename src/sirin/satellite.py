@@ -22,6 +22,8 @@ _log = logging.getLogger(__name__)
 
 # How long the device may take to play an announcement.
 ANNOUNCE_TIMEOUT_S = 120
+# How long the device may take to list its wake words.
+WAKE_WORDS_TIMEOUT_S = 5
 
 
 def device_client(cfg: DeviceConfig, client_info: str) -> APIClient:
@@ -106,6 +108,23 @@ class Satellite:
         self.status = ItemStatus(state="ok", detail=f"connected to {info.friendly_name or info.name}")
         _log.info("[%s] answers are served from %s", self.cfg.name, self.audio_base_url)
         _log.info("[%s] connected to %s (ESPHome %s)", self.cfg.name, info.name, info.esphome_version)
+        if self.cfg.wake_word is not None and (problem := await self._select_wake_word(self.cfg.wake_word)):
+            _log.warning("[%s] %s", self.cfg.name, problem)
+            self.status = ItemStatus(state="error", detail=problem)
+
+    async def _select_wake_word(self, word: str) -> str | None:
+        """Makes word the device's active wake word; returns why it cannot, or None."""
+        try:
+            config = await self._client.get_voice_assistant_configuration(timeout=WAKE_WORDS_TIMEOUT_S)
+            available = [w.id for w in config.available_wake_words]
+            if word not in available:
+                return f"no wake word {word!r} on the device, it has: {', '.join(available) or 'none'}"
+            if list(config.active_wake_words) != [word]:
+                await self._client.set_voice_assistant_configuration([word])
+                _log.info("[%s] wake word %r selected", self.cfg.name, word)
+        except APIConnectionError as exc:
+            return f"cannot select the wake word {word!r}: {type(exc).__name__}: {exc}"
+        return None
 
     async def _on_connect_error(self, exc: Exception) -> None:
         self.status = ItemStatus(state="error", detail=f"{type(exc).__name__}: {exc}")

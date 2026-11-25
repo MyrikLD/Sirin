@@ -58,7 +58,7 @@ forgotten password is replaced with `sirin --reset-password <login>` (in the con
 `docker compose exec sirin sirin --reset-password admin`). The admin adds people in the **People** card; a member can
 log in and change their own password, and only an admin sees and edits the settings. The satellites need no login.
 
-Fill in devices, STT, TTS, LLM and MCP servers. The LLM block can hold several models (for example a local one and a cloud one); `active` picks the one in use, and the system prompt is shared by all of them. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models). Settings are stored in
+Fill in devices, STT, TTS, LLM and MCP servers. The LLM block can hold several models (for example a local one and a cloud one); `active` picks the one in use, and the system prompt is shared by all of them. Each block has a **Test** button: it checks the connection with the unsaved values and fills suggestions (TTS voices, ASR languages, LLM models, wake words of a device). Settings are stored in
 the SQLite database `data/sirin.db` and applied without a restart. The JSON files of older versions (`settings.json`, `reminders.json`, `oauth/`) are not
 read: configure a new install from the page.
 

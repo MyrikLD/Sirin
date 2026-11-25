@@ -73,6 +73,8 @@ Request flow for one utterance:
 1. `Satellite` (`satellite.py`) holds an `aioesphomeapi` connection with `ReconnectLogic`. On the device's
    voice-assistant start it cancels any previous run (awaited, so `RUN_END` precedes the next `RUN_START`),
    creates a `PipelineRun`, and returns port `0` so audio comes over the API connection rather than UDP.
+   After each connect it selects `DeviceConfig.wake_word` on the device, if set; a word the device lacks is the
+   device's error status.
 2. `PipelineRun` (`pipeline.py`) speaks HA's event protocol (`VoiceAssistantEventType`). It creates a `LiveClip`
    and announces its URL in `RUN_START` before anything is synthesized.
 3. `_listen()` streams mic chunks to Wyoming ASR while `vad.Endpointer` decides end-of-utterance. The endpointer is
